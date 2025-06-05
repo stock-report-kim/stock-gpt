@@ -16,7 +16,6 @@ jobs:
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
           python -c "
-import requests
 import sys
 
 token = '${{ secrets.TELEGRAM_BOT_TOKEN }}'
