@@ -11,4 +11,4 @@ jobs:
         run: |
           curl -s -X POST https://api.telegram.org/bot${{ secrets.TELEGRAM_BOT_TOKEN }}/sendMessage \
             -d chat_id=${{ secrets.TELEGRAM_CHAT_ID }} \
-            -d text="✅ 테스트 메시지입니다! 텔레그램 연결 성공 🎉"
+            -d text="테스트 메시지입니다! 텔레그램 연결 성공"
