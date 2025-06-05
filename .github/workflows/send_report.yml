@@ -27,7 +27,6 @@ jobs:
           import matplotlib.pyplot as plt
           from bs4 import BeautifulSoup
           import openai
-          EOF
 
 # 환경 변수
 TOKEN = '${{ secrets.TELEGRAM_BOT_TOKEN }}'
@@ -113,3 +112,4 @@ for code in priority_stocks:
     with open(filename, 'rb') as photo:
         requests.post(SEND_PHOTO_URL, files={'photo': photo}, data={'chat_id': CHAT_ID})
 
+EOF
