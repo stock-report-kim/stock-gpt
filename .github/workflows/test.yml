@@ -1,0 +1,30 @@
+name: Send Telegram Message
+
+on:
+  workflow_dispatch:  # 수동 실행 가능
+  schedule:
+    - cron: '30 23 * * *'  # 한국 시간 08:30 (UTC 기준 23:30)
+
+jobs:
+  notify:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Send Telegram Message
+        env:
+          TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
+          TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+        run: |
+          python -c "
+import requests
+import sys
+
+token = '${{ secrets.TELEGRAM_BOT_TOKEN }}'
+chat_id = '${{ secrets.TELEGRAM_CHAT_ID }}'
+message = '📈 오늘의 주식 리포트\n\n✅ 추천 종목은 잠시 후 업데이트됩니다.\n📢 빠른 뉴스 이슈 및 테마 정보를 곧 제공할 예정입니다.'
+
+url = f'https://api.telegram.org/bot{token}/sendMessage'
+data = {'chat_id': chat_id, 'text': message}
+response = requests.post(url, data=data)
+print(response.text)
+"
