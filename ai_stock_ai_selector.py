@@ -26,7 +26,7 @@ def analyze_technical(code):
 
     rsi = RSIIndicator(df['Close']).rsi().iloc[-1]
     macd = MACD(df['Close']).macd_diff().iloc[-1]
-    recent_gain = (df['Close'][-1] - df['Close']][-6]) / df['Close'][-6]
+    recent_gain = (df['Close'][-1] - df['Close'][-6]) / df['Close'][-6]
 
     score = 0
     if rsi < 30: score += 2  # 과매도
