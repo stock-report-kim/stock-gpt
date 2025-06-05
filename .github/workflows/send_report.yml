@@ -1,5 +1,3 @@
-# .github/workflows/send_report.yml
-
 name: Send Advanced AI Stock Report to Telegram
 
 on:
