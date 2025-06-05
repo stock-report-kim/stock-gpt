@@ -2,27 +2,26 @@ name: Send Telegram Stock Report
 
 on:
   schedule:
-    - cron: '30 23 * * *'  # KST 오전 8:30에 해당 (UTC 기준)
+    - cron: '30 23 * * *' # UTC 기준 → 한국 시간 08:30
   workflow_dispatch: # 수동 실행도 가능
 
 jobs:
   send:
     runs-on: ubuntu-latest
 
-    steps:
-    - name: Send Telegram Message
-      env:
-        TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-        TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-      run: |
-        message="📈 $(date +'%Y-%m-%d') 단타 리포트 (ChatGPT)\n\n\
-✅ 주요 테마: AI 반도체, 2차전지, 방산\n\
-✅ 뉴스 이슈: 정부, AI 반도체 클러스터 예산 확대 발표\n\
-✅ 예상 수혜주: 리노공업, 성일하이텍, 한화시스템\n\
-✅ 전일 시간외 상승: 한미반도체 +5.2% (NVIDIA 수주 루머)\n\
-✅ 수급: 외국인 코스닥 1천억 순매수 (AI 섹터 집중)\n\
-✅ 전략: 개장 직후 거래량 급등 + 뉴스 동시 출현 종목 집중"
+    env:
+      TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
+      TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
-        curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage \
-        -d chat_id=${TELEGRAM_CHAT_ID} \
-        --data-urlencode text="$message"
+    steps:
+      - name: Send Telegram Stock Report
+        run: |
+          MESSAGE="📈 [단타용 국내 주식 리포트]\n\n"
+          MESSAGE+="✅ 주요 테마: 2차전지, 반도체, 로봇\n"
+          MESSAGE+="✅ 뉴스 이슈: 美 CPI 발표 예정, 정책 수혜 기대\n"
+          MESSAGE+="✅ 감지 종목: 삼성전자, 에코프로, 레인보우로보틱스\n\n"
+          MESSAGE+="🔁 매일 오전 8시 30분 자동 발송됩니다."
+
+          curl -s -X POST https://api.telegram.org/bot${TELEGRAM_TOKEN}/sendMessage \
+            -d chat_id=${TELEGRAM_CHAT_ID} \
+            -d text="$MESSAGE"
