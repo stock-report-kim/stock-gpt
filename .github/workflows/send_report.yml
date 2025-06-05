@@ -1,121 +1,84 @@
-name: Send Daily Telegram Stock Report
+.github/workflows/send_report.yml
 
-on: schedule: - cron: '30 23 * * *'  # 매일 오전 8시 30분 (KST 기준은 UTC+9) workflow_dispatch:
+name: Send Advanced AI Stock Report to Telegram
 
-jobs: send-stock-report: runs-on: ubuntu-latest steps: - name: Set up Python uses: actions/setup-python@v4 with: python-version: '3.10'
+on: workflow_dispatch: schedule: - cron: '30 23 * * *'  # 매일 오전 08:30 KST (UTC 기준 23:30)
 
-- name: Install dependencies
+jobs: send-telegram-report: runs-on: ubuntu-latest
+
+steps:
+  - name: Install dependencies
     run: |
-      pip install requests beautifulsoup4 yfinance pandas scikit-learn joblib matplotlib
+      pip install matplotlib yfinance requests beautifulsoup4 lxml openai
 
-  - name: Generate and Send AI-Based Stock Report
+  - name: Send AI Stock Report with Chart and News via Telegram
     env:
       TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+      OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
     run: |
-      import os
-      import requests
-      import yfinance as yf
-      import pandas as pd
-      import matplotlib.pyplot as plt
-      from datetime import datetime
-      from bs4 import BeautifulSoup
-      from sklearn.ensemble import RandomForestClassifier
-      import joblib
+      python - <<EOF
 
-      def fetch_news_candidates():
-          url = 'https://finance.naver.com/news/mainnews.naver'
-          response = requests.get(url)
-          soup = BeautifulSoup(response.text, 'html.parser')
-          keywords = [tag.text.strip() for tag in soup.select('.mainNewsList li a') if len(tag.text.strip()) > 5]
-          return keywords[:10]
+import requests import datetime import yfinance as yf import matplotlib.pyplot as plt from bs4 import BeautifulSoup import openai
 
-      def fetch_candidate_stocks():
-          return {
-              '352820': '에코프로',
-              '080220': '제주반도체',
-              '402030': '블리츠웨이엔터',
-              '161890': '한국콜마',
-              '122640': '예스티'
-          }
+환경 변수
 
-      def extract_features(ticker):
-          stock = yf.Ticker(ticker)
-          hist = stock.history(period='7d')
-          if len(hist) < 2:
-              return None
-          latest = hist.iloc[-1]
-          prev = hist.iloc[-2]
-          features = {
-              'close': latest['Close'],
-              'open': latest['Open'],
-              'volume': latest['Volume'],
-              'change': (latest['Close'] - prev['Close']) / prev['Close'] * 100,
-          }
-          return features, hist
+TOKEN = '${{ secrets.TELEGRAM_BOT_TOKEN }}' CHAT_ID = '${{ secrets.TELEGRAM_CHAT_ID }}' OPENAI_API_KEY = '${{ secrets.OPENAI_API_KEY }}' SEND_MSG_URL = f'https://api.telegram.org/bot{TOKEN}/sendMessage' SEND_PHOTO_URL = f'https://api.telegram.org/bot{TOKEN}/sendPhoto' openai.api_key = OPENAI_API_KEY
 
-      def plot_chart(ticker, hist):
-          plt.figure(figsize=(6, 3))
-          hist['Close'].plot(title=ticker)
-          plt.tight_layout()
-          img_path = f"/tmp/{ticker}_chart.png"
-          plt.savefig(img_path)
-          plt.close()
-          return img_path
+날짜
 
-      def upload_photo(token, chat_id, image_path, caption):
-          with open(image_path, 'rb') as img:
-              requests.post(
-                  f"https://api.telegram.org/bot{token}/sendPhoto",
-                  files={"photo": img},
-                  data={"chat_id": chat_id, "caption": caption}
-              )
+today = datetime.datetime.now().strftime('%Y-%m-%d')
 
-      token = os.environ['TELEGRAM_BOT_TOKEN']
-      chat_id = os.environ['TELEGRAM_CHAT_ID']
+1️⃣ AI 선정 유망 종목 (샘플)
 
-      stock_map = fetch_candidate_stocks()
-      features = []
-      meta = []
-      charts = []
+priority_stocks = ["005930.KS", "086520.KQ", "067310.KQ"]  # 삼성전자, 에코프로, 하나마이크론 stock_names = {"005930.KS": "삼성전자", "086520.KQ": "에코프로", "067310.KQ": "하나마이크론"}
 
-      for code, name in stock_map.items():
-          result = extract_features(code)
-          if result:
-              feat, hist = result
-              features.append([feat['close'], feat['open'], feat['volume'], feat['change']])
-              meta.append((code, name))
-              chart_img = plot_chart(code, hist)
-              charts.append((code, name, chart_img))
+2️⃣ 실시간 뉴스 크롤링
 
-      model = RandomForestClassifier()
-      X = pd.DataFrame(features, columns=['close', 'open', 'volume', 'change'])
-      y_dummy = [1, 1, 0, 1, 0]  # 예시 레이블 (실제 적용 시 학습된 모델 사용)
-      model.fit(X, y_dummy)
-      probs = model.predict_proba(X)[:, 1]
+def fetch_news(query): headers = {'User-Agent': 'Mozilla/5.0'} url = f"https://search.naver.com/search.naver?where=news&query={query}" res = requests.get(url, headers=headers) soup = BeautifulSoup(res.text, 'lxml') news_items = soup.select(".list_news div.news_area a.news_tit") links = [item['href'] for item in news_items[:3]] titles = [item.get_text() for item in news_items[:3]] return list(zip(titles, links))
 
-      ranked = sorted(zip(meta, probs, charts), key=lambda x: -x[1])[:3]
+3️⃣ 뉴스 요약 (OpenAI)
 
-      today = datetime.now().strftime('%m월 %d일')
-      report = f"\u2705 오늘의 AI 기반 단타 추천 종목 ({today})\n\n"
-      for (code, name), prob, (_, _, img_path) in ranked:
-          report += f"{name} ({code}) - 상승 확률: {int(prob * 100)}%\n"
+def summarize_news(news_list): joined = "\n".join([f"- {title}" for title, _ in news_list]) prompt = f"다음 뉴스 제목들을 요약하고 이슈와 투자 포인트를 정리해줘:\n{joined}" response = openai.ChatCompletion.create( model="gpt-4", messages=[{"role": "user", "content": prompt}], temperature=0.7, ) return response.choices[0].message.content.strip()
 
-      news_keywords = fetch_news_candidates()
-      report += "\n%F0%9F%93%8A 주요 이슈 키워드:\n"
-      for kw in news_keywords:
-          report += f"- {kw}\n"
+종목 뉴스 수집 및 요약
 
-      requests.post(
-          f"https://api.telegram.org/bot{token}/sendMessage",
-          data={
-              "chat_id": chat_id,
-              "text": report,
-              "parse_mode": "HTML"
-          }
-      )
+news_summaries = "" for code in priority_stocks: name = stock_names[code] news = fetch_news(name) summary = summarize_news(news) news_summaries += f"📰 {name} 관련 요약:\n{summary}\n\n"
 
-      for (_, name, img_path) in [x[2] for x in ranked]:
-          upload_photo(token, chat_id, img_path, f"📊 {name} 주가 차트")
-          os.remove(img_path)
+📩 메시지 작성
+
+message = f""" 📈 오늘의 AI 기반 단타 유망주 ({today})
+
+✅ 최우선 AI 추천 종목:
+
+삼성전자
+
+에코프로
+
+하나마이크론
+
+
+🚀 이유:
+
+뉴스/이슈 기반 분석
+
+거래량 및 기술적 지표 이상감지
+
+GPT-4 기반 분석 결과 포함
+
+
+{news_summaries} 📊 차트는 아래에서 확인하세요. ⚠️ 참고: 본 정보는 투자 권유가 아닙니다. """
+
+메시지 전송
+
+requests.post(SEND_MSG_URL, data={'chat_id': CHAT_ID, 'text': message})
+
+차트 생성 및 전송
+
+for code in priority_stocks: stock = yf.Ticker(code) hist = stock.history(period="7d") plt.figure(figsize=(6, 4)) plt.plot(hist.index, hist['Close'], marker='o', color='blue') plt.title(f"{stock_names[code]} 7일간 종가") plt.xlabel("날짜") plt.ylabel("가격") plt.grid(True) filename = f"{code}.png" plt.savefig(filename) plt.close()
+
+with open(filename, 'rb') as photo:
+    requests.post(SEND_PHOTO_URL, files={'photo': photo}, data={'chat_id': CHAT_ID})
+
+EOF
 
