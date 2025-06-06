@@ -1,4 +1,4 @@
-# ai_stock_selector.py (최종: 휴장일 대응 + 용량관리 자동 청소 포함)
+# ai_stock_selector.py (v3.0 - 전문가용 무료 AI 통합 버전)
 
 import os
 import datetime
@@ -9,12 +9,17 @@ import pandas as pd
 import requests
 from bs4 import BeautifulSoup
 from ta.momentum import RSIIndicator
+from ta.trend import MACD
+from transformers import pipeline
 
 # === 설정 ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 SEND_MSG_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
 SEND_PHOTO_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+
+# === 무료 AI 모델 로드 ===
+summarizer = pipeline("summarization", model="knkarthick/MEETING_SUMMARY")  # 또는 KoT5 사용 가능
 
 # === 1. 급등 종목 수집 ===
 def fetch_candidate_stocks():
@@ -42,14 +47,14 @@ def analyze_technical(code):
         if df.empty or len(df) < 20:
             return 0, None
         close = df['Close']
-        if hasattr(close, "ndim") and close.ndim > 1:
-            close = close.squeeze()
+        volume = df['Volume']
+        macd = MACD(close)
         rsi = RSIIndicator(close).rsi()
-        volume_spike = df['Volume'].iloc[-1] > df['Volume'].rolling(5).mean().iloc[-1] * 2
+        volume_spike = volume.iloc[-1] > volume.rolling(5).mean().iloc[-1] * 2
         ma20 = close.rolling(20).mean().iloc[-1]
-        score = int(rsi.iloc[-1] < 40) + int(volume_spike) + int(close.iloc[-1] > ma20)
-        last_date = get_last_trading_date(df)
-        return score, last_date
+        macd_signal = macd.macd_diff().iloc[-1] > 0
+        score = int(rsi.iloc[-1] < 40) + int(volume_spike) + int(close.iloc[-1] > ma20) + int(macd_signal)
+        return score, get_last_trading_date(df)
     except Exception as e:
         print(f"Error in analyze_technical({code}): {e}")
         return 0, None
@@ -66,8 +71,12 @@ def fetch_news_titles(name):
 def gpt_style_summary(titles):
     if not titles:
         return "관련 뉴스 없음"
-    joined = "\n".join([f"- {t}" for t in titles])
-    return f"[요약]\n{joined}\n→ 위 기사들로 보아 해당 종목은 단기 테마 또는 수급 이슈로 급등 가능성이 있습니다."
+    text = " ".join(titles)
+    try:
+        result = summarizer(text, max_length=60, min_length=10, do_sample=False)
+        return result[0]['summary_text']
+    except:
+        return "뉴스 요약 실패"
 
 # === 4. 차트 저장 ===
 def save_candle_chart(code, name):
@@ -75,10 +84,9 @@ def save_candle_chart(code, name):
         df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
         if df.empty:
             return None
-        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
-        df = df.astype(float)
-        filename = f"{code}_chart.png"
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna().astype(float)
         df.index.name = 'Date'
+        filename = f"{code}_chart.png"
         mpf.plot(df, type='candle', volume=True, style='yahoo', title=name, savefig=filename)
         return filename
     except Exception as e:
@@ -113,7 +121,7 @@ def main():
         score, date = analyze_technical(s['code'])
         if date:
             last_date = date
-        if score >= 2:
+        if score >= 3:
             titles = fetch_news_titles(s['name'])
             summary = gpt_style_summary(titles)
             selected.append({"name": s['name'], "code": s['code'], "score": score, "summary": summary})
@@ -123,7 +131,7 @@ def main():
     header = f"📈 [{last_date}] 기준 AI 급등 유망 종목\n\n"
     body = ""
     for s in selected:
-        body += f"✅ {s['name']} ({s['code']})\n기술점수: {s['score']}/3\n{s['summary']}\n\n"
+        body += f"✅ {s['name']} ({s['code']})\n기술점수: {s['score']}/4\n{s['summary']}\n\n"
     footer = "⚠️ 본 정보는 투자 참고용이며, 투자 판단은 본인 책임입니다."
     full_message = header + body + footer
 
@@ -138,3 +146,4 @@ def main():
 
 if __name__ == '__main__':
     main()
+
