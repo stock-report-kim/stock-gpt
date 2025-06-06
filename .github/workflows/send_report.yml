@@ -1,32 +1,33 @@
-name: Daily AI Stock Report
+name: AI Stock Selector & Telegram Sender
 
 on:
   schedule:
-    - cron: '30 23 * * *'  # 매일 오전 08:30 KST 실행
+    - cron: '30 23 * * *' # 매일 오전 8:30 KST (UTC 기준 23:30)
   workflow_dispatch:
 
 jobs:
-  run-stock-ai:
+  run-stock-selector:
     runs-on: ubuntu-latest
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - name: Checkout Repository
+        uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
 
-      - name: Install dependencies
+      - name: Install Dependencies
         run: |
-          pip install torch
-          pip install yfinance matplotlib mplfinance pandas ta
-          pip install beautifulsoup4 lxml requests
-          pip install transformers
+          pip install --upgrade pip
+          pip install yfinance pandas numpy matplotlib mplfinance ta \
+                      beautifulsoup4 lxml requests \
+                      transformers torch
 
       - name: Run AI Stock Selector
         env:
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-        run: python ai_stock_ai_selector.py
+        run: |
+          python ai_stock_ai_selector.py
