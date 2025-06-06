@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v4.7 - 전체 함수 포함, 투자매력/테마/백테스트/청소 등 통합)
+# ai_stock_selector.py (v5.0 - 전체 통합)
 
 import os
 import datetime
@@ -24,7 +24,7 @@ summarizer = pipeline("summarization", model="knkarthick/MEETING_SUMMARY")
 theme_classifier = pipeline("text-classification", model="nlptown/bert-base-multilingual-uncased-sentiment")
 scorer = pipeline("sentiment-analysis", model="nlptown/bert-base-multilingual-uncased-sentiment")
 
-# === 업종 자동 크롤링 ===
+# === 1. 급등 종목 수집 ===
 def fetch_sector(name):
     try:
         url = f"https://finance.naver.com/item/main.nhn?query={name}"
@@ -38,7 +38,6 @@ def fetch_sector(name):
     except:
         return "기타"
 
-# === 1. 급등 종목 수집 ===
 def fetch_candidate_stocks():
     url = "https://finance.naver.com/sise/lastsearch2.naver"
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -113,7 +112,7 @@ def fetch_news_titles(name):
     print(f"[뉴스/루머 총 수집] {name} - {len(titles)}건")
     return titles
 
-# === 4. 뉴스 요약 ===
+# === 4. GPT 뉴스 요약 ===
 def gpt_style_summary(titles):
     if not titles:
         return "관련 뉴스 및 루머 없음"
@@ -132,14 +131,14 @@ def score_investment_attractiveness(summary):
         result = scorer(summary)
         if result and isinstance(result, list):
             label = result[0]['label']
-            score = int(label[0])
+            score = int(label[0])  # e.g., '4 stars'
             return score
         return 0
     except Exception as e:
         print(f"[투자매력도 점수화 오류]: {e}")
         return 0
 
-# === 6. 테마 자동 분류 ===
+# === 6. 테마 분류 ===
 def classify_theme(summary):
     try:
         result = theme_classifier(summary)
@@ -150,7 +149,20 @@ def classify_theme(summary):
         print(f"[테마 분류 오류]: {e}")
         return "기타"
 
-# === 7. 캔들차트 저장 ===
+# === 7. 최근 유사 패턴 ===
+def check_recent_performance(df):
+    try:
+        if df is None or df.empty or len(df) < 10:
+            return "패턴 분석 불가"
+        recent = df['Close'].iloc[-3:]
+        if all(x > df['Close'].mean() for x in recent):
+            return "최근 3일 상승세 유지"
+        else:
+            return "변동성 존재"
+    except Exception as e:
+        return f"패턴 분석 실패: {e}"
+
+# === 8. 캔들차트 저장 ===
 def save_candle_chart(code, name):
     try:
         df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
@@ -164,14 +176,13 @@ def save_candle_chart(code, name):
         print(f"[캔들차트 생성 오류] {name}: {e}")
         return None
 
-# === 8. 텔레그램 메시지 전송 ===
+# === 9. 텔레그램 전송 ===
 def send_telegram_message(message):
     try:
         requests.post(SEND_MSG_URL, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message})
     except Exception as e:
         print(f"[텔레그램 메시지 전송 오류]: {e}")
 
-# === 9. 텔레그램 이미지 전송 ===
 def send_telegram_image(filepath):
     try:
         with open(filepath, 'rb') as photo:
@@ -179,20 +190,7 @@ def send_telegram_image(filepath):
     except Exception as e:
         print(f"[텔레그램 이미지 전송 오류]: {e}")
 
-# === 10. 백테스트/패턴 분석 ===
-def check_recent_performance(df):
-    try:
-        if df is None or df.empty or len(df) < 10:
-            return "패턴 분석 불가"
-        recent = df['Close'].iloc[-3:]
-        if all(x > df['Close'].mean() for x in recent):
-            return "최근 3일 상승세 유지"
-        else:
-            return "변동성 존재"
-    except Exception as e:
-        return f"패턴 분석 실패: {e}"
-
-# === 11. 저장소 정리 ===
+# === 10. 저장소 정리 ===
 def cleanup_old_files():
     import glob
     for f in glob.glob("*.png"):
@@ -200,3 +198,41 @@ def cleanup_old_files():
             os.remove(f)
         except:
             pass
+
+# === 11. main ===
+def main():
+    stocks = fetch_candidate_stocks()
+    scored = []
+    for s in stocks:
+        tech_score, date, df = analyze_technical(s['code'])
+        if tech_score >= 2:
+            news_titles = fetch_news_titles(s['name'])
+            summary = gpt_style_summary(news_titles)
+            invest_score = score_investment_attractiveness(summary)
+            theme = classify_theme(summary)
+            pattern = check_recent_performance(df)
+            scored.append({
+                "name": s['name'], "code": s['code'], "score": tech_score,
+                "summary": summary, "invest": invest_score, "theme": theme,
+                "date": date, "pattern": pattern
+            })
+
+    top3 = sorted(scored, key=lambda x: (-x['score'], -x['invest']))[:3]
+    today = datetime.date.today().strftime("%Y-%m-%d")
+    msg = f"📈 [{today}] 기준 AI 급등 유망 종목\n\n"
+    for s in top3:
+        msg += f"🔹 {s['name']} ({s['code']})\n"
+        msg += f"기술점수: {s['score']} / 투자매력: {s['invest']}\n"
+        msg += f"테마: {s['theme']} / 패턴: {s['pattern']}\n"
+        msg += f"이슈 요약: {s['summary']}\n\n"
+    msg += "⚠️ 본 정보는 투자 참고용이며, 투자 판단은 본인 책임입니다."
+
+    send_telegram_message(msg)
+    for s in top3:
+        chart = save_candle_chart(s['code'], s['name'])
+        if chart:
+            send_telegram_image(chart)
+    cleanup_old_files()
+
+if __name__ == "__main__":
+    main()
