@@ -2,7 +2,7 @@ name: Daily AI Stock Report
 
 on:
   schedule:
-    - cron: '30 23 * * *'  # 매일 오전 8:30 KST (UTC 기준 23:30)
+    - cron: '30 23 * * *'  # 매일 오전 08:30 KST
   workflow_dispatch:
 
 jobs:
@@ -13,7 +13,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Setup Python
+      - name: Set up Python
         uses: actions/setup-python@v4
         with:
           python-version: '3.10'
