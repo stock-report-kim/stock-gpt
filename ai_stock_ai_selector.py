@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v8.0 - 기술 분석 제거 + 시가총액 필터 추가)
+# ai_stock_selector.py (v8.0 - 루머/SNS 기반 추출 + AI 선정 병렬 비교)
 
 import os
 import datetime
@@ -6,8 +6,10 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 import pandas as pd
+import numpy as np
 import requests
 from bs4 import BeautifulSoup
+from ta.momentum import RSIIndicator
 from transformers import pipeline
 
 # === 설정 ===
@@ -35,15 +37,7 @@ def fetch_sector(name):
     except:
         return "기타"
 
-# === 시가총액 조회 ===
-def fetch_market_cap(code):
-    try:
-        df = yf.Ticker(code).info
-        return df.get("marketCap", 0) / 1e8  # 억 단위로 환산
-    except:
-        return 0
-
-# === 1. 급등 종목 수집 (시가총액 필터 포함) ===
+# === 1. 급등 종목 수집 ===
 def fetch_candidate_stocks():
     url = "https://finance.naver.com/sise/lastsearch2.naver"
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -56,147 +50,140 @@ def fetch_candidate_stocks():
         if "code=" in href:
             code = href.split("code=")[-1]
             suffix = ".KS" if code.startswith("0") else ".KQ"
-            full_code = code + suffix
-            cap = fetch_market_cap(full_code)
-            if 500 <= cap <= 8000:
-                sector = fetch_sector(name)
-                stocks.append({"name": name, "code": full_code, "sector": sector})
+            sector = fetch_sector(name)
+            mcap = fetch_market_cap(code)
+            if 500 <= mcap <= 8000:
+                stocks.append({"name": name, "code": code + suffix, "sector": sector, "mcap": mcap})
     print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
     return stocks[:30]
 
-# === 2. 뉴스 및 커뮤니티 정보 수집 ===
-def fetch_news_titles(name):
-    titles = []
+# === 시가총액 수집 ===
+def fetch_market_cap(code):
     try:
-        url = f"https://search.naver.com/search.naver?where=news&query={name}"
+        url = f"https://finance.naver.com/item/main.naver?code={code}"
         headers = {'User-Agent': 'Mozilla/5.0'}
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'lxml')
-        news = soup.select(".list_news div.news_area a.news_tit")
-        if news:
-            extracted = [n.text.strip() for n in news[:3]]
-            titles += extracted
-            print(f"[뉴스 수집 성공] {name} - {len(extracted)}건")
-        else:
-            print(f"[뉴스 없음] {name}")
-    except Exception as e:
-        print(f"[뉴스 수집 오류] {name}: {e}")
+        mcap_tag = soup.select_one(".first .blind")
+        if mcap_tag:
+            mcap_text = mcap_tag.text.replace(",", "")
+            return int(int(mcap_text) / 1e8)  # 억 원 단위
+    except:
+        pass
+    return 0
+
+# === 커뮤니티 및 SNS/블로그 기반 루머 수집 ===
+def fetch_rumor_titles(name):
+    titles = []
     try:
-        url = f"https://m.stock.naver.com/domestic/stock/{name}/community"
-        res = requests.get(url, headers=headers)
-        soup = BeautifulSoup(res.text, 'lxml')
-        posts = soup.select(".community_area .title")
-        if posts:
-            extracted_posts = [p.text.strip() for p in posts[:2]]
-            titles += extracted_posts
-            print(f"[커뮤니티 수집 성공] {name} - {len(extracted_posts)}건")
-        else:
-            print(f"[커뮤니티 없음] {name}")
+        # 디시인사이드 클리앙 등 수집 예시 (간소화)
+        for site in [
+            f"https://www.clien.net/service/search?q={name}",
+            f"https://www.dcinside.com/search/{name}",
+            f"https://search.naver.com/search.naver?where=view&query={name}"
+        ]:
+            res = requests.get(site, headers={'User-Agent': 'Mozilla/5.0'})
+            soup = BeautifulSoup(res.text, 'lxml')
+            titles += [t.text.strip() for t in soup.find_all(['h3', 'a']) if name in t.text][:2]
     except Exception as e:
-        print(f"[커뮤니티 수집 오류] {name}: {e}")
-    print(f"[뉴스/루머 총 수집] {name} - {len(titles)}건")
+        print(f"[루머 수집 오류] {name}: {e}")
     return titles
 
-# === 3. GPT 뉴스 요약 ===
+# === 2. 요약 및 AI 분석 ===
 def gpt_style_summary(titles):
     if not titles:
         return "관련 뉴스 및 루머 없음"
     text = "\n".join(["- " + t for t in titles])
     try:
-        prompt = f"다음 정보는 뉴스/커뮤니티 게시글/루머입니다. 투자자 관점에서 핵심 이슈를 요약해줘:\n{text}"
+        prompt = f"다음 정보는 루머/게시글입니다. 투자자 관점에서 핵심 이슈를 요약해줘:\n{text}"
         result = summarizer(prompt, max_length=80, min_length=20, do_sample=False)
         return result[0]['summary_text']
     except Exception as e:
         print(f"[요약 오류]: {e}")
         return "요약 실패"
 
-# === 4. 투자매력도 점수화 ===
 def score_investment_attractiveness(summary):
     try:
         result = scorer(summary)
         if result and isinstance(result, list):
             label = result[0]['label']
-            score = int(label[0])
-            return score
-        return 0
-    except Exception as e:
-        print(f"[투자매력도 점수화 오류]: {e}")
-        return 0
+            return int(label[0])
+    except:
+        pass
+    return 0
 
-# === 5. 테마 분류 ===
 def classify_theme(summary):
     try:
         result = theme_classifier(summary)
         if result and isinstance(result, list):
             return result[0]['label']
-        return "기타"
-    except Exception as e:
-        print(f"[테마 분류 오류]: {e}")
-        return "기타"
+    except:
+        pass
+    return "기타"
 
-# === 6. 캔들차트 저장 ===
+# === 3. 차트 저장 ===
 def save_candle_chart(code, name):
     try:
         df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
+        df = df.astype(float)
         if df.empty:
-            print(f"[캔들차트 실패] {code} 데이터 없음")
             return None
         filename = f"{code}_chart.png"
         mpf.plot(df, type='candle', volume=True, style='yahoo', title=name, savefig=filename)
         return filename
-    except Exception as e:
-        print(f"[캔들차트 생성 오류] {name}: {e}")
+    except:
         return None
 
-# === 7. 텔레그램 전송 ===
+# === 4. 텔레그램 전송 ===
 def send_telegram_message(message):
     try:
         requests.post(SEND_MSG_URL, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message})
-    except Exception as e:
-        print(f"[텔레그램 메시지 전송 오류]: {e}")
+    except:
+        pass
 
 def send_telegram_image(filepath):
     try:
         with open(filepath, 'rb') as photo:
             requests.post(SEND_PHOTO_URL, files={'photo': photo}, data={'chat_id': TELEGRAM_CHAT_ID})
-    except Exception as e:
-        print(f"[텔레그램 이미지 전송 오류]: {e}")
+    except:
+        pass
 
-# === 8. 저장소 정리 ===
+# === 5. 저장소 정리 ===
 def cleanup_all_files():
     for f in os.listdir():
-        if f.endswith(".png") or f.endswith(".log") or f.endswith(".json"):
-            try:
-                os.remove(f)
-            except:
-                pass
+        if f.endswith(".png"):
+            try: os.remove(f)
+            except: pass
 
-# === 9. main ===
+# === 6. main ===
 def main():
     stocks = fetch_candidate_stocks()
-    scored = []
+    rumor_results, ai_results = [], []
+
     for s in stocks:
-        news_titles = fetch_news_titles(s['name'])
-        summary = gpt_style_summary(news_titles)
+        rumors = fetch_rumor_titles(s['name'])
+        summary = gpt_style_summary(rumors)
         invest_score = score_investment_attractiveness(summary)
         theme = classify_theme(summary)
-        scored.append({
-            "name": s['name'], "code": s['code'],
-            "summary": summary, "invest": invest_score,
-            "theme": theme, "sector": s['sector']
-        })
+        if invest_score >= 3:
+            rumor_results.append({"name": s['name'], "code": s['code'], "summary": summary, "invest": invest_score, "theme": theme})
+        ai_results.append({"name": s['name'], "code": s['code'], "summary": summary, "invest": invest_score, "theme": theme})
 
-    top3 = sorted(scored, key=lambda x: -x['invest'])[:3]
+    top_rumors = sorted(rumor_results, key=lambda x: -x['invest'])[:3]
+    top_ai = sorted(ai_results, key=lambda x: -x['invest'])[:3]
+
     today = datetime.date.today().strftime("%Y-%m-%d")
-    msg = f"📈 [{today}] 기준 AI 급등 유망 종목\n\n"
-    for s in top3:
-        msg += f"🔹 {s['name']} ({s['code']})\n"
-        msg += f"투자매력: {s['invest']} / 테마: {s['theme']}\n"
-        msg += f"이슈 요약: {s['summary']}\n\n"
-    msg += "⚠️ 본 정보는 투자 참고용이며, 투자 판단은 본인 책임입니다."
+    msg = f"📌 [{today}] 급등 예상 종목 리스트\n\n"
+    msg += "[🔥 루머/이벤트 기반 급등 유망주]\n"
+    for s in top_rumors:
+        msg += f"🔸{s['name']} | 매력도 {s['invest']} | 테마: {s['theme']}\n{ s['summary'] }\n\n"
+    msg += "[🤖 AI 분석 기반 유망주]\n"
+    for s in top_ai:
+        msg += f"🔹{s['name']} | 매력도 {s['invest']} | 테마: {s['theme']}\n{ s['summary'] }\n\n"
+    msg += "⚠️ 본 정보는 참고용이며, 투자 판단은 본인 책임입니다."
 
     send_telegram_message(msg)
-    for s in top3:
+    for s in top_rumors[:1] + top_ai[:1]:
         chart = save_candle_chart(s['code'], s['name'])
         if chart:
             send_telegram_image(chart)
