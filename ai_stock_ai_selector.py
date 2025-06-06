@@ -25,17 +25,18 @@ theme_classifier = pipeline("text-classification", model="nlptown/bert-base-mult
 scorer = pipeline("sentiment-analysis", model="nlptown/bert-base-multilingual-uncased-sentiment")
 
 # === 업종 자동 크롤링 ===
-def fetch_sector(name):
+def fetch_sector(code: str) -> str:
+    """Retrieve the sector for a given stock code."""
     try:
-        url = f"https://finance.naver.com/item/main.nhn?query={name}"
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        url = f"https://finance.naver.com/item/main.naver?code={code}"
+        headers = {"User-Agent": "Mozilla/5.0"}
         res = requests.get(url, headers=headers)
-        soup = BeautifulSoup(res.text, 'lxml')
+        soup = BeautifulSoup(res.text, "lxml")
         info = soup.select_one(".description")
         if info and ">" in info.text:
             return info.text.split(" > ")[-1].strip()
         return "기타"
-    except:
+    except Exception:
         return "기타"
 
 # === 1. 급등 종목 수집 ===
@@ -51,7 +52,7 @@ def fetch_candidate_stocks():
         if "code=" in href:
             code = href.split("code=")[-1]
             suffix = ".KS" if code.startswith("0") else ".KQ"
-            sector = fetch_sector(name)
+            sector = fetch_sector(code)
             stocks.append({"name": name, "code": code + suffix, "sector": sector})
     print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
     return stocks[:30]
@@ -189,9 +190,17 @@ def main():
             break
 
     header = f"📈 [{last_date}] 기준 AI 급등 유망 종목\n\n"
-    body = ""
-    for s in selected:
-        body += f"✅ {s['name']} ({s['code']})\n업종: {s['sector']}\n기술점수: {s['score']}/4\n{s['summary']}\n{s['gain']}\n{s['theme']}\n\n"
+    if not selected:
+        body = "금일 조건을 충족하는 종목이 없습니다.\n"
+    else:
+        body = ""
+        for s in selected:
+            body += (
+                f"✅ {s['name']} ({s['code']})\n"
+                f"업종: {s['sector']}\n"
+                f"기술점수: {s['score']}/4\n"
+                f"{s['summary']}\n{s['gain']}\n{s['theme']}\n\n"
+            )
     footer = "⚠️ 본 정보는 투자 참고용이며, 투자 판단은 본인 책임입니다."
     full_message = header + body + footer
 
