@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v7.1 - Stochastic + 거래량 기반 분석, 시가총액 필터링 포함, 에러 수정)
+# ai_stock_selector.py (v8.0 - 거래대금 변동성 상위 필터 적용)
 
 import os
 import datetime
@@ -37,37 +37,40 @@ def fetch_sector(name):
     except:
         return "기타"
 
-# === 시가총액 조회 ===
-def fetch_market_cap(code):
-    try:
-        ticker = yf.Ticker(code)
-        info = ticker.info
-        return info.get("marketCap", 0)
-    except:
-        return 0
-
-# === 1. 급등 종목 수집 + 시총 필터링 ===
+# === 1. 거래대금 변동성 상위 100 종목 수집 ===
 def fetch_candidate_stocks():
-    url = "https://finance.naver.com/sise/lastsearch2.naver"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    res = requests.get(url, headers=headers)
-    soup = BeautifulSoup(res.text, 'lxml')
-    stocks = []
-    for a in soup.select(".box_type_l a"):
-        name = a.text.strip()
-        href = a.get("href", "")
-        if "code=" in href:
-            code = href.split("code=")[-1]
+    try:
+        url = "https://finance.naver.com/sise/sise_quant.naver"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'lxml')
+        stocks = []
+        rows = soup.select("table.type_2 tr")
+        for row in rows:
+            cols = row.select("td")
+            if len(cols) < 10:
+                continue
+            name = cols[1].text.strip()
+            href = cols[1].select_one("a")
+            if not href or "code=" not in href['href']:
+                continue
+            code = href['href'].split("code=")[-1]
             suffix = ".KS" if code.startswith("0") else ".KQ"
-            full_code = code + suffix
-            mcap = fetch_market_cap(full_code)
-            if 5e8 <= mcap <= 8e9:
-                sector = fetch_sector(name)
-                stocks.append({"name": name, "code": full_code, "sector": sector})
-    print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
-    return stocks
+            sector = fetch_sector(name)
+            mcap_text = cols[6].text.strip().replace(",", "")
+            try:
+                mcap = int(mcap_text)
+                if 50000000000 <= mcap <= 800000000000:
+                    stocks.append({"name": name, "code": code + suffix, "sector": sector})
+            except:
+                continue
+        print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
+        return stocks[:100]
+    except Exception as e:
+        print(f"[종목 수집 오류]: {e}")
+        return []
 
-# === 2. 기술 분석 (스토캐스틱 + 거래량 기반) ===
+# === 2. 기술 분석 (거래량 급증만 활용) ===
 def get_last_trading_date(df):
     return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
 
@@ -78,20 +81,11 @@ def analyze_technical(code):
             print(f"[!] 데이터 부족 또는 없음: {code}, 빈 데이터프레임 반환됨")
             return 0, None, None
 
-        close = df['Close']
-        high = df['High']
-        low = df['Low']
         volume = df['Volume']
-
-        stoch = StochasticOscillator(high=high, low=low, close=close)
-        stoch_k = stoch.stoch().iloc[-1]
-
-        stoch_cond = stoch_k < 20  # 과매도 구간
         volume_spike = volume.iloc[-1] > volume.rolling(20).mean().iloc[-1] * 1.5
+        score = int(volume_spike)
 
-        score = int(stoch_cond) + int(volume_spike)
-
-        print(f"[{code}] 기술점수: {score} (Stoch %K: {stoch_k:.2f}, 거래량급증: {volume_spike})")
+        print(f"[{code}] 기술점수: {score} (거래량급증: {volume_spike})")
         return score, get_last_trading_date(df), df
     except Exception as e:
         print(f"Error in analyze_technical({code}): {e}")
