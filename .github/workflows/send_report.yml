@@ -20,7 +20,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install yfinance matplotlib mplfinance pandas ta beautifulsoup4 lxml requests
+          pip install yfinance matplotlib mplfinance pandas ta beautifulsoup4 lxml requests transformers
 
       - name: Run AI Stock Selector
         env:
