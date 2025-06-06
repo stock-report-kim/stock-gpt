@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v7.1 - 스토캐스틱 기반 기술 분석 + 시총 필터링 수정)
+# ai_stock_selector.py (v7.1 - Stochastic + 거래량 기반 분석, 시가총액 필터링 포함, 에러 수정)
 
 import os
 import datetime
@@ -38,11 +38,11 @@ def fetch_sector(name):
         return "기타"
 
 # === 시가총액 조회 ===
-def get_market_cap(code):
+def fetch_market_cap(code):
     try:
         ticker = yf.Ticker(code)
         info = ticker.info
-        return info.get("marketCap", 0) / 1e8  # 억 원 단위
+        return info.get("marketCap", 0)
     except:
         return 0
 
@@ -60,14 +60,14 @@ def fetch_candidate_stocks():
             code = href.split("code=")[-1]
             suffix = ".KS" if code.startswith("0") else ".KQ"
             full_code = code + suffix
-            cap = get_market_cap(full_code)
-            if 500 <= cap <= 8000:
+            mcap = fetch_market_cap(full_code)
+            if 5e8 <= mcap <= 8e9:
                 sector = fetch_sector(name)
                 stocks.append({"name": name, "code": full_code, "sector": sector})
     print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
-    return stocks[:30]
+    return stocks
 
-# === 2. 기술 분석 (스토캐스틱 기반) ===
+# === 2. 기술 분석 (스토캐스틱 + 거래량 기반) ===
 def get_last_trading_date(df):
     return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
 
@@ -79,17 +79,19 @@ def analyze_technical(code):
             return 0, None, None
 
         close = df['Close']
+        high = df['High']
+        low = df['Low']
         volume = df['Volume']
-        stoch = StochasticOscillator(high=df['High'], low=df['Low'], close=df['Close'])
-        stoch_k = stoch.stoch()
-        stoch_d = stoch.stoch_signal()
 
-        stoch_signal = stoch_k.iloc[-1] > stoch_d.iloc[-1] and stoch_k.iloc[-1] < 30
+        stoch = StochasticOscillator(high=high, low=low, close=close)
+        stoch_k = stoch.stoch().iloc[-1]
+
+        stoch_cond = stoch_k < 20  # 과매도 구간
         volume_spike = volume.iloc[-1] > volume.rolling(20).mean().iloc[-1] * 1.5
-        close_ma = close.iloc[-1] > close.rolling(10).mean().iloc[-1]
 
-        score = int(stoch_signal) + int(volume_spike) + int(close_ma)
-        print(f"[{code}] 기술점수: {score} (Stoch_K: {stoch_k.iloc[-1]:.2f}, VolumeSpike: {volume_spike})")
+        score = int(stoch_cond) + int(volume_spike)
+
+        print(f"[{code}] 기술점수: {score} (Stoch %K: {stoch_k:.2f}, 거래량급증: {volume_spike})")
         return score, get_last_trading_date(df), df
     except Exception as e:
         print(f"Error in analyze_technical({code}): {e}")
