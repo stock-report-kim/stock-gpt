@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v4.1 - 전문가용 무료 AI + 백테스트 + 업종자동크롤링 + GPT 테마 분류)
+# ai_stock_selector.py (v4.4 - 루머 커뮤니티 데이터까지 요약 반영)
 
 import os
 import datetime
@@ -6,6 +6,7 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 import pandas as pd
+import numpy as np
 import requests
 from bs4 import BeautifulSoup
 from ta.momentum import RSIIndicator
@@ -21,6 +22,7 @@ SEND_PHOTO_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
 # === AI 모델 로드 ===
 summarizer = pipeline("summarization", model="knkarthick/MEETING_SUMMARY")
 theme_classifier = pipeline("text-classification", model="nlptown/bert-base-multilingual-uncased-sentiment")
+scorer = pipeline("sentiment-analysis", model="nlptown/bert-base-multilingual-uncased-sentiment")
 
 # === 업종 자동 크롤링 ===
 def fetch_sector(name):
@@ -75,24 +77,41 @@ def analyze_technical(code):
         print(f"Error in analyze_technical({code}): {e}")
         return 0, None, None
 
-# === 3. 뉴스 요약 ===
+# === 3. 뉴스 및 커뮤니티 정보 수집 ===
 def fetch_news_titles(name):
-    url = f"https://search.naver.com/search.naver?where=news&query={name}"
-    headers = {'User-Agent': 'Mozilla/5.0'}
-    res = requests.get(url, headers=headers)
-    soup = BeautifulSoup(res.text, 'lxml')
-    news = soup.select(".list_news div.news_area a.news_tit")
-    return [n.text.strip() for n in news[:3]]
+    titles = []
+    try:
+        url = f"https://search.naver.com/search.naver?where=news&query={name}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'lxml')
+        news = soup.select(".list_news div.news_area a.news_tit")
+        titles += [n.text.strip() for n in news[:3]]
+    except:
+        pass
+
+    try:
+        # 종토방 or 클리앙 증권게시판 등 커뮤니티 찌라시
+        url = f"https://m.stock.naver.com/domestic/stock/{name}/community"
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'lxml')
+        posts = soup.select(".community_area .title")
+        titles += [p.text.strip() for p in posts[:2]]
+    except:
+        pass
+
+    return titles
 
 def gpt_style_summary(titles):
     if not titles:
-        return "관련 뉴스 없음"
-    text = " ".join(titles)
+        return "관련 뉴스 및 루머 없음"
+    text = "\n".join(["- " + t for t in titles])
     try:
-        result = summarizer(text, max_length=60, min_length=10, do_sample=False)
+        prompt = f"다음 정보는 뉴스/커뮤니티 게시글/루머입니다. 투자자 관점에서 핵심 이슈를 요약해줘:\n{text}"
+        result = summarizer(prompt, max_length=80, min_length=20, do_sample=False)
         return result[0]['summary_text']
     except:
-        return "뉴스 요약 실패"
+        return "요약 실패"
 
 # === 4. 테마 분류 ===
 def classify_theme(text):
