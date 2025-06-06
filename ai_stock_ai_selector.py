@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v7.0 - 전체 통합 + 백테스트 조건 튜닝 + 저장소 클린업 포함)
+# ai_stock_selector.py (v7.1 - 에러 개선 및 전체 통합)
 
 import os
 import datetime
@@ -69,10 +69,9 @@ def analyze_technical(code):
 
         close = df['Close']
         volume = df['Volume']
-        rsi = RSIIndicator(close).rsi()
+        rsi = RSIIndicator(close).rsi().squeeze()
         macd = MACD(close)
 
-        # 백테스트 기반 조건: 단기 저점 후 반등형 + 거래량 돌파 + MACD 전환
         rsi_cond = rsi.iloc[-1] < 35 and rsi.iloc[-2] > rsi.iloc[-1]
         macd_cond = macd.macd_diff().iloc[-1] > 0
         volume_spike = volume.iloc[-1] > volume.rolling(20).mean().iloc[-1] * 1.5
@@ -239,7 +238,8 @@ def main():
         chart = save_candle_chart(s['code'], s['name'])
         if chart:
             send_telegram_image(chart)
-    cleanup_old_files()
+    cleanup_all_files()
 
 if __name__ == "__main__":
     main()
+
