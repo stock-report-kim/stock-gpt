@@ -1,4 +1,4 @@
-# ai_stock_selector.py (수정 완료: FutureWarning & mplfinance 오류 대응)
+# ai_stock_selector.py (최종: 휴장일 대응 + 용량관리 자동 청소 포함)
 
 import os
 import datetime
@@ -33,24 +33,28 @@ def fetch_candidate_stocks():
     return stocks[:30]
 
 # === 2. 기술 분석 ===
+def get_last_trading_date(df):
+    return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
+
 def analyze_technical(code):
     try:
         df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
         if df.empty or len(df) < 20:
-            return 0
+            return 0, None
         close = df['Close']
         if hasattr(close, "ndim") and close.ndim > 1:
             close = close.squeeze()
         rsi = RSIIndicator(close).rsi()
         volume_spike = df['Volume'].iloc[-1] > df['Volume'].rolling(5).mean().iloc[-1] * 2
         ma20 = close.rolling(20).mean().iloc[-1]
-        score = int(rsi.iloc[-1] < 30) + int(volume_spike) + int(close.iloc[-1] > ma20)
-        return score
+        score = int(rsi.iloc[-1] < 40) + int(volume_spike) + int(close.iloc[-1] > ma20)
+        last_date = get_last_trading_date(df)
+        return score, last_date
     except Exception as e:
         print(f"Error in analyze_technical({code}): {e}")
-        return 0
+        return 0, None
 
-# === 3. 뉴스 요약 (GPT 스타일) ===
+# === 3. 뉴스 요약 ===
 def fetch_news_titles(name):
     url = f"https://search.naver.com/search.naver?where=news&query={name}"
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -89,14 +93,26 @@ def send_telegram_photo(path, caption=""):
     with open(path, 'rb') as img:
         requests.post(SEND_PHOTO_URL, files={'photo': img}, data={'chat_id': TELEGRAM_CHAT_ID, 'caption': caption})
 
-# === 6. 실행 ===
+# === 6. 이미지 정리 ===
+def cleanup_images():
+    for file in os.listdir():
+        if file.endswith("_chart.png"):
+            try:
+                os.remove(file)
+            except Exception as e:
+                print(f"Error deleting file {file}: {e}")
+
+# === 7. 실행 ===
 def main():
     today = datetime.datetime.now().strftime('%Y-%m-%d')
     stocks = fetch_candidate_stocks()
     selected = []
+    last_date = today
 
     for s in stocks:
-        score = analyze_technical(s['code'])
+        score, date = analyze_technical(s['code'])
+        if date:
+            last_date = date
         if score >= 2:
             titles = fetch_news_titles(s['name'])
             summary = gpt_style_summary(titles)
@@ -104,7 +120,7 @@ def main():
         if len(selected) >= 3:
             break
 
-    header = f"📈 [{today}] AI 급등 유망 종목\n\n"
+    header = f"📈 [{last_date}] 기준 AI 급등 유망 종목\n\n"
     body = ""
     for s in selected:
         body += f"✅ {s['name']} ({s['code']})\n기술점수: {s['score']}/3\n{s['summary']}\n\n"
@@ -117,6 +133,8 @@ def main():
         chart = save_candle_chart(s['code'], s['name'])
         if chart:
             send_telegram_photo(chart, caption=s['name'])
+
+    cleanup_images()
 
 if __name__ == '__main__':
     main()
