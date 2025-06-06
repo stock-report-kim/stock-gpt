@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v7.1 - 기술 분석 스토캐스틱 + 시총 필터링 500억~8000억)
+# ai_stock_selector.py (v7.1 - 스토캐스틱 기반 기술 분석 + 시총 필터링 수정)
 
 import os
 import datetime
@@ -37,7 +37,16 @@ def fetch_sector(name):
     except:
         return "기타"
 
-# === 1. 급등 종목 수집 ===
+# === 시가총액 조회 ===
+def get_market_cap(code):
+    try:
+        ticker = yf.Ticker(code)
+        info = ticker.info
+        return info.get("marketCap", 0) / 1e8  # 억 원 단위
+    except:
+        return 0
+
+# === 1. 급등 종목 수집 + 시총 필터링 ===
 def fetch_candidate_stocks():
     url = "https://finance.naver.com/sise/lastsearch2.naver"
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -50,43 +59,37 @@ def fetch_candidate_stocks():
         if "code=" in href:
             code = href.split("code=")[-1]
             suffix = ".KS" if code.startswith("0") else ".KQ"
-            sector = fetch_sector(name)
-            if check_market_cap_range(code + suffix):
-                stocks.append({"name": name, "code": code + suffix, "sector": sector})
+            full_code = code + suffix
+            cap = get_market_cap(full_code)
+            if 500 <= cap <= 8000:
+                sector = fetch_sector(name)
+                stocks.append({"name": name, "code": full_code, "sector": sector})
     print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
     return stocks[:30]
 
-# === 시가총액 필터링 (500억 ~ 8000억) ===
-def check_market_cap_range(code):
-    try:
-        info = yf.Ticker(code).info
-        market_cap = info.get("marketCap", 0)
-        return 5e11 <= market_cap <= 8e12
-    except:
-        return False
-
-# === 2. 기술 분석 (스토캐스틱 + 거래량) ===
+# === 2. 기술 분석 (스토캐스틱 기반) ===
 def get_last_trading_date(df):
     return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
 
 def analyze_technical(code):
     try:
         df = yf.download(code, period="6mo", interval="1d", auto_adjust=True)
-        if df.empty or len(df) < 20:
+        if df.empty or len(df) < 50:
             print(f"[!] 데이터 부족 또는 없음: {code}, 빈 데이터프레임 반환됨")
             return 0, None, None
 
         close = df['Close']
-        high = df['High']
-        low = df['Low']
         volume = df['Volume']
+        stoch = StochasticOscillator(high=df['High'], low=df['Low'], close=df['Close'])
+        stoch_k = stoch.stoch()
+        stoch_d = stoch.stoch_signal()
 
-        stoch = StochasticOscillator(high=high, low=low, close=close)
-        k_value = stoch.stoch().iloc[-1]
+        stoch_signal = stoch_k.iloc[-1] > stoch_d.iloc[-1] and stoch_k.iloc[-1] < 30
         volume_spike = volume.iloc[-1] > volume.rolling(20).mean().iloc[-1] * 1.5
+        close_ma = close.iloc[-1] > close.rolling(10).mean().iloc[-1]
 
-        score = int(k_value < 30) + int(volume_spike)
-        print(f"[{code}] 기술점수: {score} (StochK: {k_value:.2f}, 거래량급증: {volume_spike})")
+        score = int(stoch_signal) + int(volume_spike) + int(close_ma)
+        print(f"[{code}] 기술점수: {score} (Stoch_K: {stoch_k.iloc[-1]:.2f}, VolumeSpike: {volume_spike})")
         return score, get_last_trading_date(df), df
     except Exception as e:
         print(f"Error in analyze_technical({code}): {e}")
