@@ -2,7 +2,7 @@ name: Daily AI Stock Report
 
 on:
   schedule:
-    - cron: '30 23 * * *'  # 매일 오전 08:30 KST
+    - cron: '30 23 * * *'  # 매일 오전 08:30 KST 실행
   workflow_dispatch:
 
 jobs:
