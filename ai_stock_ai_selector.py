@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v7.1 - 에러 개선 및 전체 통합)
+# ai_stock_selector.py (v7.1 - 입력 형식 오류 수정 및 함수 호출 일치화)
 
 import os
 import datetime
@@ -67,11 +67,12 @@ def analyze_technical(code):
             print(f"[!] 데이터 부족 또는 없음: {code}, 빈 데이터프레임 반환됨")
             return 0, None, None
 
-        close = df['Close']
-        volume = df['Volume']
-        rsi = RSIIndicator(close).rsi().squeeze()
+        close = df['Close'].squeeze()
+        volume = df['Volume'].squeeze()
+        rsi = RSIIndicator(close).rsi()
         macd = MACD(close)
 
+        # 백테스트 기반 조건: 단기 저점 후 반등형 + 거래량 돌파 + MACD 전환
         rsi_cond = rsi.iloc[-1] < 35 and rsi.iloc[-2] > rsi.iloc[-1]
         macd_cond = macd.macd_diff().iloc[-1] > 0
         volume_spike = volume.iloc[-1] > volume.rolling(20).mean().iloc[-1] * 1.5
