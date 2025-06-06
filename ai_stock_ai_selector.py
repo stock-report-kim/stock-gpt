@@ -1,4 +1,4 @@
-# ai_stock_selector.py
+# ai_stock_ai_selector.py
 
 import requests
 import yfinance as yf
