@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v4.5 - 휴장일에도 최종 거래일 기준 종목 분석 지원)
+# ai_stock_selector.py (v4.6 - 디버깅용 로그 추가 및 분석 실패 방지)
 
 import os
 import datetime
@@ -53,17 +53,18 @@ def fetch_candidate_stocks():
             suffix = ".KS" if code.startswith("0") else ".KQ"
             sector = fetch_sector(name)
             stocks.append({"name": name, "code": code + suffix, "sector": sector})
+    print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
     return stocks[:30]
 
 # === 2. 기술 분석 ===
 def get_last_trading_date(df):
-    # 마지막 영업일 기준 날짜 추출
     return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
 
 def analyze_technical(code):
     try:
         df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
         if df.empty or len(df) < 20:
+            print(f"[!] 데이터 부족 또는 없음: {code}")
             return 0, None, None
         close = df['Close']
         volume = df['Volume']
@@ -73,8 +74,8 @@ def analyze_technical(code):
         ma20 = close.rolling(20).mean().iloc[-1]
         macd_signal = macd.macd_diff().iloc[-1] > 0
         score = int(rsi.iloc[-1] < 40) + int(volume_spike) + int(close.iloc[-1] > ma20) + int(macd_signal)
-        last_date = get_last_trading_date(df)
-        return score, last_date, df
+        print(f"[{code}] 기술점수: {score} (RSI: {rsi.iloc[-1]:.2f}, 거래량급증: {volume_spike}, MACD: {macd_signal})")
+        return score, get_last_trading_date(df), df
     except Exception as e:
         print(f"Error in analyze_technical({code}): {e}")
         return 0, None, None
@@ -91,9 +92,7 @@ def fetch_news_titles(name):
         titles += [n.text.strip() for n in news[:3]]
     except:
         pass
-
     try:
-        # 종토방 or 클리앙 증권게시판 등 커뮤니티 찌라시
         url = f"https://m.stock.naver.com/domestic/stock/{name}/community"
         res = requests.get(url, headers=headers)
         soup = BeautifulSoup(res.text, 'lxml')
@@ -101,7 +100,7 @@ def fetch_news_titles(name):
         titles += [p.text.strip() for p in posts[:2]]
     except:
         pass
-
+    print(f"[뉴스/루머 수집] {name} - {len(titles)}건 수집")
     return titles
 
 def gpt_style_summary(titles):
@@ -112,7 +111,8 @@ def gpt_style_summary(titles):
         prompt = f"다음 정보는 뉴스/커뮤니티 게시글/루머입니다. 투자자 관점에서 핵심 이슈를 요약해줘:\n{text}"
         result = summarizer(prompt, max_length=80, min_length=20, do_sample=False)
         return result[0]['summary_text']
-    except:
+    except Exception as e:
+        print(f"[요약 오류]: {e}")
         return "요약 실패"
 
 # === 4. 테마 분류 ===
