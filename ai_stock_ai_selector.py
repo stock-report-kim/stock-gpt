@@ -1,279 +1,202 @@
-diff --git a/ai_stock_ai_selector.py b/ai_stock_ai_selector.py
-index adbc49ac073a002a390e607e2eddd4a5ec6bd716..34c02140f68b2014b042e595a3c4c943a384e554 100644
---- a/ai_stock_ai_selector.py
-+++ b/ai_stock_ai_selector.py
-@@ -1,49 +1,52 @@
--# ai_stock_selector.py (v4.6 - 디버깅용 로그 추가 및 분석 실패 방지)
-+# ai_stock_ai_selector.py (v4.6 - 디버깅용 로그 추가 및 분석 실패 방지)
- 
- import os
- import datetime
- import yfinance as yf
- import matplotlib.pyplot as plt
- import mplfinance as mpf
- import pandas as pd
- import numpy as np
- import requests
- from bs4 import BeautifulSoup
- from ta.momentum import RSIIndicator
- from ta.trend import MACD
- from transformers import pipeline
- 
- # === 설정 ===
- TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
- TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
- SEND_MSG_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
- SEND_PHOTO_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
- 
- # === AI 모델 로드 ===
- summarizer = pipeline("summarization", model="knkarthick/MEETING_SUMMARY")
--theme_classifier = pipeline("text-classification", model="nlptown/bert-base-multilingual-uncased-sentiment")
-+sentiment_classifier = pipeline(
-+    "text-classification",
-+    model="nlptown/bert-base-multilingual-uncased-sentiment",
-+)
- scorer = pipeline("sentiment-analysis", model="nlptown/bert-base-multilingual-uncased-sentiment")
- 
- # === 업종 자동 크롤링 ===
- def fetch_sector(name):
-     try:
-         url = f"https://finance.naver.com/item/main.nhn?query={name}"
-         headers = {'User-Agent': 'Mozilla/5.0'}
-         res = requests.get(url, headers=headers)
-         soup = BeautifulSoup(res.text, 'lxml')
-         info = soup.select_one(".description")
-         if info and ">" in info.text:
-             return info.text.split(" > ")[-1].strip()
-         return "기타"
-     except:
-         return "기타"
- 
- # === 1. 급등 종목 수집 ===
- def fetch_candidate_stocks():
-     url = "https://finance.naver.com/sise/lastsearch2.naver"
-     headers = {'User-Agent': 'Mozilla/5.0'}
-     res = requests.get(url, headers=headers)
-     soup = BeautifulSoup(res.text, 'lxml')
-     stocks = []
-     for a in soup.select(".box_type_l a"):
-         name = a.text.strip()
-diff --git a/ai_stock_ai_selector.py b/ai_stock_ai_selector.py
-index adbc49ac073a002a390e607e2eddd4a5ec6bd716..34c02140f68b2014b042e595a3c4c943a384e554 100644
---- a/ai_stock_ai_selector.py
-+++ b/ai_stock_ai_selector.py
-@@ -61,89 +64,90 @@ def get_last_trading_date(df):
-     return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
- 
- def analyze_technical(code):
-     try:
-         df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
-         if df.empty or len(df) < 20:
-             print(f"[!] 데이터 부족 또는 없음: {code}")
-             return 0, None, None
-         close = df['Close']
-         volume = df['Volume']
-         macd = MACD(close)
-         rsi = RSIIndicator(close).rsi()
-         volume_spike = volume.iloc[-1] > volume.rolling(5).mean().iloc[-1] * 2
-         ma20 = close.rolling(20).mean().iloc[-1]
-         macd_signal = macd.macd_diff().iloc[-1] > 0
-         score = int(rsi.iloc[-1] < 40) + int(volume_spike) + int(close.iloc[-1] > ma20) + int(macd_signal)
-         print(f"[{code}] 기술점수: {score} (RSI: {rsi.iloc[-1]:.2f}, 거래량급증: {volume_spike}, MACD: {macd_signal})")
-         return score, get_last_trading_date(df), df
-     except Exception as e:
-         print(f"Error in analyze_technical({code}): {e}")
-         return 0, None, None
- 
- # === 3. 뉴스 및 커뮤니티 정보 수집 ===
- def fetch_news_titles(name):
-     titles = []
-+    headers = {"User-Agent": "Mozilla/5.0"}
-     try:
-         url = f"https://search.naver.com/search.naver?where=news&query={name}"
--        headers = {'User-Agent': 'Mozilla/5.0'}
-         res = requests.get(url, headers=headers)
-         soup = BeautifulSoup(res.text, 'lxml')
-         news = soup.select(".list_news div.news_area a.news_tit")
-         titles += [n.text.strip() for n in news[:3]]
-     except:
-         pass
-     try:
-         url = f"https://m.stock.naver.com/domestic/stock/{name}/community"
-         res = requests.get(url, headers=headers)
-         soup = BeautifulSoup(res.text, 'lxml')
-         posts = soup.select(".community_area .title")
-         titles += [p.text.strip() for p in posts[:2]]
-     except:
-         pass
-     print(f"[뉴스/루머 수집] {name} - {len(titles)}건 수집")
-     return titles
- 
- def gpt_style_summary(titles):
-     if not titles:
-         return "관련 뉴스 및 루머 없음"
-     text = "\n".join(["- " + t for t in titles])
-     try:
-         prompt = f"다음 정보는 뉴스/커뮤니티 게시글/루머입니다. 투자자 관점에서 핵심 이슈를 요약해줘:\n{text}"
-         result = summarizer(prompt, max_length=80, min_length=20, do_sample=False)
-         return result[0]['summary_text']
-     except Exception as e:
-         print(f"[요약 오류]: {e}")
-         return "요약 실패"
- 
--# === 4. 테마 분류 ===
--def classify_theme(text):
-+# === 4. 감성 분석 ===
-+def classify_sentiment(text):
-+    """Run sentiment classification on the summary text."""
-     try:
--        result = theme_classifier(text[:200])[0]['label']
--        return f"테마 예측: {result}"
--    except:
--        return "테마 분류 실패"
-+        result = sentiment_classifier(text[:200])[0]["label"]
-+        return f"감성 예측: {result}"
-+    except Exception:
-+        return "감성 분석 실패"
- 
- # === 5. 백테스트 수익률 계산 ===
- def backtest_gain(df):
-     try:
-         entry = df['Close'].iloc[-2]  # 조건 충족 전날 종가
-         future = df['Close'].iloc[-1]  # 다음날 종가
-         gain = (future - entry) / entry * 100
-         return f"예상 수익률(백테스트): {gain:.2f}%"
-     except:
-         return "수익률 계산 실패"
- 
- # === 6. 차트 저장 ===
- def save_candle_chart(code, name):
-     try:
-         df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
-         if df.empty:
-             return None
-         df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna().astype(float)
-         df.index.name = 'Date'
-         filename = f"{code}_chart.png"
-         mpf.plot(df, type='candle', volume=True, style='yahoo', title=name, savefig=filename)
-         return filename
-     except Exception as e:
-         print(f"Error generating chart for {code}: {e}")
-         return None
-diff --git a/ai_stock_ai_selector.py b/ai_stock_ai_selector.py
-index adbc49ac073a002a390e607e2eddd4a5ec6bd716..34c02140f68b2014b042e595a3c4c943a384e554 100644
---- a/ai_stock_ai_selector.py
-+++ b/ai_stock_ai_selector.py
-@@ -160,49 +164,112 @@ def send_telegram_photo(path, caption=""):
- def cleanup_images():
-     for file in os.listdir():
-         if file.endswith("_chart.png"):
-             try:
-                 os.remove(file)
-             except Exception as e:
-                 print(f"Error deleting file {file}: {e}")
- 
- # === 9. 실행 ===
- def main():
-     today = datetime.datetime.now().strftime('%Y-%m-%d')
-     stocks = fetch_candidate_stocks()
-     selected = []
-     last_date = today
- 
-     for s in stocks:
-         if s['sector'] not in ["반도체", "2차전지"]:
-             continue
- 
-         score, date, df = analyze_technical(s['code'])
-         if date:
-             last_date = date
-         if score >= 3:
-             titles = fetch_news_titles(s['name'])
-             summary = gpt_style_summary(titles)
--            theme = classify_theme(summary)
-+            theme = classify_sentiment(summary)
-             gain = backtest_gain(df) if df is not None else ""
-             selected.append({"name": s['name'], "code": s['code'], "score": score, "summary": summary, "theme": theme, "gain": gain, "sector": s['sector']})
-         if len(selected) >= 3:
-             break
- 
-     header = f"📈 [{last_date}] 기준 AI 급등 유망 종목\n\n"
-     body = ""
-     for s in selected:
-         body += f"✅ {s['name']} ({s['code']})\n업종: {s['sector']}\n기술점수: {s['score']}/4\n{s['summary']}\n{s['gain']}\n{s['theme']}\n\n"
-     footer = "⚠️ 본 정보는 투자 참고용이며, 투자 판단은 본인 책임입니다."
-     full_message = header + body + footer
- 
-     send_telegram_message(full_message)
- 
-     for s in selected:
-         chart = save_candle_chart(s['code'], s['name'])
-         if chart:
-             send_telegram_photo(chart, caption=s['name'])
- 
-     cleanup_images()
- 
- if __name__ == '__main__':
-     main()
-+
-+# === 테스트 코드 ===
-+
-+class MockResponse:
-+    def __init__(self, text):
-+        self.text = text
-+
-+
-+def test_fetch_news_titles(monkeypatch):
-+    html_news = """
-+    <a class='news_tit'>News A</a>
-+    <a class='news_tit'>News B</a>
-+    <a class='news_tit'>News C</a>
-+    <a class='news_tit'>News D</a>
-+    """
-+    html_comm = """
-+    <div class='community_area'>
-+        <div class='title'>Post A</div>
-+        <div class='title'>Post B</div>
-+        <div class='title'>Post C</div>
-+    </div>
-+    """
-+
-+    def mock_get(url, headers=None):
-+        if "where=news" in url:
-+            return MockResponse(html_news)
-+        return MockResponse(html_comm)
-+
-+    monkeypatch.setattr(requests, "get", mock_get)
-+    titles = fetch_news_titles("TEST")
-+    assert len(titles) == 5
-+    assert titles[0] == "News A"
-+    assert titles[-1] == "Post B"
-+
-+
-+def test_analyze_technical(monkeypatch):
-+    dates = pd.date_range("2024-01-01", periods=30)
-+    data = pd.DataFrame(
-+        {
-+            "Close": np.arange(1, 31, dtype=float),
-+            "Volume": [100] * 29 + [300],
-+        },
-+        index=dates,
-+    )
-+
-+    def mock_download(*args, **kwargs):
-+        return data
-+
-+    monkeypatch.setattr(yf, "download", mock_download)
-+    score, date, df = analyze_technical("TEST")
-+    assert date == dates[-1].strftime("%Y-%m-%d")
-+    assert df is data
-+    assert score >= 1
-+
-+    def mock_short(*args, **kwargs):
-+        return data.iloc[:10]
-+
-+    monkeypatch.setattr(yf, "download", mock_short)
-+    score, date, df = analyze_technical("TEST")
-+    assert score == 0
-+    assert date is None
-+    assert df is None
-+
+# ai_stock_selector.py (v4.7 - 전체 함수 포함, 투자매력/테마/백테스트/청소 등 통합)
+
+import os
+import datetime
+import yfinance as yf
+import matplotlib.pyplot as plt
+import mplfinance as mpf
+import pandas as pd
+import numpy as np
+import requests
+from bs4 import BeautifulSoup
+from ta.momentum import RSIIndicator
+from ta.trend import MACD
+from transformers import pipeline
+
+# === 설정 ===
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+SEND_MSG_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+SEND_PHOTO_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
+
+# === AI 모델 로드 ===
+summarizer = pipeline("summarization", model="knkarthick/MEETING_SUMMARY")
+theme_classifier = pipeline("text-classification", model="nlptown/bert-base-multilingual-uncased-sentiment")
+scorer = pipeline("sentiment-analysis", model="nlptown/bert-base-multilingual-uncased-sentiment")
+
+# === 업종 자동 크롤링 ===
+def fetch_sector(name):
+    try:
+        url = f"https://finance.naver.com/item/main.nhn?query={name}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'lxml')
+        info = soup.select_one(".description")
+        if info and ">" in info.text:
+            return info.text.split(" > ")[-1].strip()
+        return "기타"
+    except:
+        return "기타"
+
+# === 1. 급등 종목 수집 ===
+def fetch_candidate_stocks():
+    url = "https://finance.naver.com/sise/lastsearch2.naver"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    res = requests.get(url, headers=headers)
+    soup = BeautifulSoup(res.text, 'lxml')
+    stocks = []
+    for a in soup.select(".box_type_l a"):
+        name = a.text.strip()
+        href = a.get("href", "")
+        if "code=" in href:
+            code = href.split("code=")[-1]
+            suffix = ".KS" if code.startswith("0") else ".KQ"
+            sector = fetch_sector(name)
+            stocks.append({"name": name, "code": code + suffix, "sector": sector})
+    print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
+    return stocks[:30]
+
+# === 2. 기술 분석 ===
+def get_last_trading_date(df):
+    return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
+
+def analyze_technical(code):
+    try:
+        df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
+        if df.empty or len(df) < 20:
+            print(f"[!] 데이터 부족 또는 없음: {code}, 빈 데이터프레임 반환됨")
+            return 0, None, None
+        close = df['Close']
+        volume = df['Volume']
+        macd = MACD(close)
+        rsi = RSIIndicator(close).rsi()
+        volume_spike = volume.iloc[-1] > volume.rolling(5).mean().iloc[-1] * 2
+        ma20 = close.rolling(20).mean().iloc[-1]
+        macd_signal = macd.macd_diff().iloc[-1] > 0
+        score = int(rsi.iloc[-1] < 40) + int(volume_spike) + int(close.iloc[-1] > ma20) + int(macd_signal)
+        print(f"[{code}] 기술점수: {score} (RSI: {rsi.iloc[-1]:.2f}, 거래량급증: {volume_spike}, MACD: {macd_signal})")
+        return score, get_last_trading_date(df), df
+    except Exception as e:
+        print(f"Error in analyze_technical({code}): {e}")
+        return 0, None, None
+
+# === 3. 뉴스 및 커뮤니티 정보 수집 ===
+def fetch_news_titles(name):
+    titles = []
+    try:
+        url = f"https://search.naver.com/search.naver?where=news&query={name}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'lxml')
+        news = soup.select(".list_news div.news_area a.news_tit")
+        if news:
+            extracted = [n.text.strip() for n in news[:3]]
+            titles += extracted
+            print(f"[뉴스 수집 성공] {name} - {len(extracted)}건")
+        else:
+            print(f"[뉴스 없음] {name}")
+    except Exception as e:
+        print(f"[뉴스 수집 오류] {name}: {e}")
+    try:
+        url = f"https://m.stock.naver.com/domestic/stock/{name}/community"
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'lxml')
+        posts = soup.select(".community_area .title")
+        if posts:
+            extracted_posts = [p.text.strip() for p in posts[:2]]
+            titles += extracted_posts
+            print(f"[커뮤니티 수집 성공] {name} - {len(extracted_posts)}건")
+        else:
+            print(f"[커뮤니티 없음] {name}")
+    except Exception as e:
+        print(f"[커뮤니티 수집 오류] {name}: {e}")
+    print(f"[뉴스/루머 총 수집] {name} - {len(titles)}건")
+    return titles
+
+# === 4. 뉴스 요약 ===
+def gpt_style_summary(titles):
+    if not titles:
+        return "관련 뉴스 및 루머 없음"
+    text = "\n".join(["- " + t for t in titles])
+    try:
+        prompt = f"다음 정보는 뉴스/커뮤니티 게시글/루머입니다. 투자자 관점에서 핵심 이슈를 요약해줘:\n{text}"
+        result = summarizer(prompt, max_length=80, min_length=20, do_sample=False)
+        return result[0]['summary_text']
+    except Exception as e:
+        print(f"[요약 오류]: {e}")
+        return "요약 실패"
+
+# === 5. 투자매력도 점수화 ===
+def score_investment_attractiveness(summary):
+    try:
+        result = scorer(summary)
+        if result and isinstance(result, list):
+            label = result[0]['label']
+            score = int(label[0])
+            return score
+        return 0
+    except Exception as e:
+        print(f"[투자매력도 점수화 오류]: {e}")
+        return 0
+
+# === 6. 테마 자동 분류 ===
+def classify_theme(summary):
+    try:
+        result = theme_classifier(summary)
+        if result and isinstance(result, list):
+            return result[0]['label']
+        return "기타"
+    except Exception as e:
+        print(f"[테마 분류 오류]: {e}")
+        return "기타"
+
+# === 7. 캔들차트 저장 ===
+def save_candle_chart(code, name):
+    try:
+        df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
+        if df.empty:
+            print(f"[캔들차트 실패] {code} 데이터 없음")
+            return None
+        filename = f"{code}_chart.png"
+        mpf.plot(df, type='candle', volume=True, style='yahoo', title=name, savefig=filename)
+        return filename
+    except Exception as e:
+        print(f"[캔들차트 생성 오류] {name}: {e}")
+        return None
+
+# === 8. 텔레그램 메시지 전송 ===
+def send_telegram_message(message):
+    try:
+        requests.post(SEND_MSG_URL, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message})
+    except Exception as e:
+        print(f"[텔레그램 메시지 전송 오류]: {e}")
+
+# === 9. 텔레그램 이미지 전송 ===
+def send_telegram_image(filepath):
+    try:
+        with open(filepath, 'rb') as photo:
+            requests.post(SEND_PHOTO_URL, files={'photo': photo}, data={'chat_id': TELEGRAM_CHAT_ID})
+    except Exception as e:
+        print(f"[텔레그램 이미지 전송 오류]: {e}")
+
+# === 10. 백테스트/패턴 분석 ===
+def check_recent_performance(df):
+    try:
+        if df is None or df.empty or len(df) < 10:
+            return "패턴 분석 불가"
+        recent = df['Close'].iloc[-3:]
+        if all(x > df['Close'].mean() for x in recent):
+            return "최근 3일 상승세 유지"
+        else:
+            return "변동성 존재"
+    except Exception as e:
+        return f"패턴 분석 실패: {e}"
+
+# === 11. 저장소 정리 ===
+def cleanup_old_files():
+    import glob
+    for f in glob.glob("*.png"):
+        try:
+            os.remove(f)
+        except:
+            pass
