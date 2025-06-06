@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v5.0 - 전체 통합)
+# ai_stock_selector.py (v7.0 - 전체 통합 + 백테스트 조건 튜닝 + 저장소 클린업 포함)
 
 import os
 import datetime
@@ -24,7 +24,7 @@ summarizer = pipeline("summarization", model="knkarthick/MEETING_SUMMARY")
 theme_classifier = pipeline("text-classification", model="nlptown/bert-base-multilingual-uncased-sentiment")
 scorer = pipeline("sentiment-analysis", model="nlptown/bert-base-multilingual-uncased-sentiment")
 
-# === 1. 급등 종목 수집 ===
+# === 업종 자동 크롤링 ===
 def fetch_sector(name):
     try:
         url = f"https://finance.naver.com/item/main.nhn?query={name}"
@@ -38,6 +38,7 @@ def fetch_sector(name):
     except:
         return "기타"
 
+# === 1. 급등 종목 수집 ===
 def fetch_candidate_stocks():
     url = "https://finance.naver.com/sise/lastsearch2.naver"
     headers = {'User-Agent': 'Mozilla/5.0'}
@@ -55,25 +56,31 @@ def fetch_candidate_stocks():
     print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
     return stocks[:30]
 
-# === 2. 기술 분석 ===
+# === 2. 기술 분석 (백테스트 기반 튜닝 포함) ===
 def get_last_trading_date(df):
     return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
 
 def analyze_technical(code):
     try:
-        df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
-        if df.empty or len(df) < 20:
+        df = yf.download(code, period="6mo", interval="1d", auto_adjust=True)
+        if df.empty or len(df) < 50:
             print(f"[!] 데이터 부족 또는 없음: {code}, 빈 데이터프레임 반환됨")
             return 0, None, None
+
         close = df['Close']
         volume = df['Volume']
-        macd = MACD(close)
         rsi = RSIIndicator(close).rsi()
-        volume_spike = volume.iloc[-1] > volume.rolling(5).mean().iloc[-1] * 2
-        ma20 = close.rolling(20).mean().iloc[-1]
-        macd_signal = macd.macd_diff().iloc[-1] > 0
-        score = int(rsi.iloc[-1] < 40) + int(volume_spike) + int(close.iloc[-1] > ma20) + int(macd_signal)
-        print(f"[{code}] 기술점수: {score} (RSI: {rsi.iloc[-1]:.2f}, 거래량급증: {volume_spike}, MACD: {macd_signal})")
+        macd = MACD(close)
+
+        # 백테스트 기반 조건: 단기 저점 후 반등형 + 거래량 돌파 + MACD 전환
+        rsi_cond = rsi.iloc[-1] < 35 and rsi.iloc[-2] > rsi.iloc[-1]
+        macd_cond = macd.macd_diff().iloc[-1] > 0
+        volume_spike = volume.iloc[-1] > volume.rolling(20).mean().iloc[-1] * 1.5
+        close_ma = close.iloc[-1] > close.rolling(10).mean().iloc[-1]
+
+        score = int(rsi_cond) + int(macd_cond) + int(volume_spike) + int(close_ma)
+
+        print(f"[{code}] 기술점수: {score} (RSI: {rsi.iloc[-1]:.2f}, 거래량급증: {volume_spike}, MACD: {macd_cond})")
         return score, get_last_trading_date(df), df
     except Exception as e:
         print(f"Error in analyze_technical({code}): {e}")
@@ -191,13 +198,13 @@ def send_telegram_image(filepath):
         print(f"[텔레그램 이미지 전송 오류]: {e}")
 
 # === 10. 저장소 정리 ===
-def cleanup_old_files():
-    import glob
-    for f in glob.glob("*.png"):
-        try:
-            os.remove(f)
-        except:
-            pass
+def cleanup_all_files():
+    for f in os.listdir():
+        if f.endswith(".png") or f.endswith(".log") or f.endswith(".json"):
+            try:
+                os.remove(f)
+            except:
+                pass
 
 # === 11. main ===
 def main():
