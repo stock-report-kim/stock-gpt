@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v7.1 - 입력 형식 오류 수정 및 함수 호출 일치화)
+# ai_stock_selector.py (v7.1 - 기술 분석 스토캐스틱 + 시총 필터링 500억~8000억)
 
 import os
 import datetime
@@ -9,8 +9,7 @@ import pandas as pd
 import numpy as np
 import requests
 from bs4 import BeautifulSoup
-from ta.momentum import RSIIndicator
-from ta.trend import MACD
+from ta.momentum import StochasticOscillator
 from transformers import pipeline
 
 # === 설정 ===
@@ -52,40 +51,47 @@ def fetch_candidate_stocks():
             code = href.split("code=")[-1]
             suffix = ".KS" if code.startswith("0") else ".KQ"
             sector = fetch_sector(name)
-            stocks.append({"name": name, "code": code + suffix, "sector": sector})
+            if check_market_cap_range(code + suffix):
+                stocks.append({"name": name, "code": code + suffix, "sector": sector})
     print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
     return stocks[:30]
 
-# === 2. 기술 분석 (백테스트 기반 튜닝 포함) ===
+# === 시가총액 필터링 (500억 ~ 8000억) ===
+def check_market_cap_range(code):
+    try:
+        info = yf.Ticker(code).info
+        market_cap = info.get("marketCap", 0)
+        return 5e11 <= market_cap <= 8e12
+    except:
+        return False
+
+# === 2. 기술 분석 (스토캐스틱 + 거래량) ===
 def get_last_trading_date(df):
     return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
 
 def analyze_technical(code):
     try:
         df = yf.download(code, period="6mo", interval="1d", auto_adjust=True)
-        if df.empty or len(df) < 50:
+        if df.empty or len(df) < 20:
             print(f"[!] 데이터 부족 또는 없음: {code}, 빈 데이터프레임 반환됨")
             return 0, None, None
 
-        close = df['Close'].squeeze()
-        volume = df['Volume'].squeeze()
-        rsi = RSIIndicator(close).rsi()
-        macd = MACD(close)
+        close = df['Close']
+        high = df['High']
+        low = df['Low']
+        volume = df['Volume']
 
-        # 백테스트 기반 조건: 단기 저점 후 반등형 + 거래량 돌파 + MACD 전환
-        rsi_cond = rsi.iloc[-1] < 35 and rsi.iloc[-2] > rsi.iloc[-1]
-        macd_cond = macd.macd_diff().iloc[-1] > 0
+        stoch = StochasticOscillator(high=high, low=low, close=close)
+        k_value = stoch.stoch().iloc[-1]
         volume_spike = volume.iloc[-1] > volume.rolling(20).mean().iloc[-1] * 1.5
-        close_ma = close.iloc[-1] > close.rolling(10).mean().iloc[-1]
 
-        score = int(rsi_cond) + int(macd_cond) + int(volume_spike) + int(close_ma)
-
-        print(f"[{code}] 기술점수: {score} (RSI: {rsi.iloc[-1]:.2f}, 거래량급증: {volume_spike}, MACD: {macd_cond})")
+        score = int(k_value < 30) + int(volume_spike)
+        print(f"[{code}] 기술점수: {score} (StochK: {k_value:.2f}, 거래량급증: {volume_spike})")
         return score, get_last_trading_date(df), df
     except Exception as e:
         print(f"Error in analyze_technical({code}): {e}")
         return 0, None, None
-
+        
 # === 3. 뉴스 및 커뮤니티 정보 수집 ===
 def fetch_news_titles(name):
     titles = []
