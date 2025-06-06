@@ -1,121 +1,91 @@
-# ai_stock_ai_selector.py
+# ai_stock_selector.py
 
 import requests
+import datetime
 import yfinance as yf
 import pandas as pd
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 from bs4 import BeautifulSoup
 from ta.momentum import RSIIndicator
-from ta.trend import MACD
 import os
-import datetime
+import json
 
-# Step 1: 실시간 테마 키워드 크롤링 (네이버 뉴스 기준)
-def fetch_trending_keywords():
-    url = "https://finance.naver.com/"
-    res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-    soup = BeautifulSoup(res.text, 'lxml')
-    keywords = []
-    for tag in soup.select(".section_stock_market .tit a"):
-        if tag.text:
-            keywords.append(tag.text.strip())
-    return list(set(keywords))[:5]  # 상위 5개 테마 키워드
+# 환경 변수 (GitHub Actions 또는 로컬 .env에서 설정)
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
+SEND_MSG_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+SEND_PHOTO_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
 
-# Step 2: 키워드에 연관된 종목 후보 수집 (네이버 뉴스 기사 기반)
-def search_related_stocks(keyword):
-    url = f"https://search.naver.com/search.naver?where=news&query={keyword}+주식"
-    res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
-    soup = BeautifulSoup(res.text, 'lxml')
-    articles = soup.select(".list_news .news_tit")
-    stock_names = []
-    for a in articles:
-        title = a.text
-        for word in title.split():
-            if word.endswith("주") or len(word) >= 3:
-                stock_names.append(word.strip())
-    return list(set(stock_names))[:3]  # 키워드당 종목 최대 3개 추출
+# 후보 종목 리스트 동적 수집 (네이버 급등주 페이지 기반)
+def fetch_candidate_stocks():
+    url = "https://finance.naver.com/sise/sise_rise.naver"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    res = requests.get(url, headers=headers)
+    soup = BeautifulSoup(res.text, 'html.parser')
+    table = soup.select("table.type_2 tr")
+    codes = []
+    for row in table:
+        a_tag = row.find("a")
+        if a_tag and "main.naver?code=" in a_tag.get("href"):
+            code = a_tag.get("href").split("=")[-1]
+            codes.append(code + ".KS" if code.startswith("0") else code + ".KQ")
+    return list(set(codes))[:30]  # 상위 30종목
 
-# Step 3: 네이버 종목명으로 티커 변환 (간단한 매핑 예시)
-def name_to_ticker(name):
-    mapping_url = f"https://finance.naver.com/search/searchList.naver?query={name}"
-    res = requests.get(mapping_url, headers={'User-Agent': 'Mozilla/5.0'})
-    soup = BeautifulSoup(res.text, 'lxml')
-    result = soup.select_one("table tr td.tit a")
-    if result:
-        href = result['href']
-        if 'code=' in href:
-            return href.split('code=')[1]
-    return None
-
-# Step 4: 기술적 분석 지표 기반 점수
-
+# 기술적 분석 스코어 계산
 def analyze_technical(code):
-    try:
-        df = yf.download(code + ".KS", period="3mo")
-        if df.empty or len(df) < 20:
-            return 0
-
-        rsi = RSIIndicator(df['Close']).rsi().iloc[-1]
-        macd = MACD(df['Close']).macd_diff().iloc[-1]
-
-        score = 0
-        if rsi < 30:
-            score += 2
-        elif rsi > 70:
-            score -= 1
-        if macd > 0:
-            score += 2
-        return score
-    except Exception as e:
+    df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
+    if df.empty or len(df) < 20:
         return 0
+    rsi = RSIIndicator(df['Close']).rsi().iloc[-1]
+    volume_spike = df['Volume'].iloc[-1] > df['Volume'].rolling(window=5).mean().iloc[-1] * 2
+    ma20 = df['Close'].rolling(window=20).mean().iloc[-1]
+    price = df['Close'].iloc[-1]
+    signal = (rsi < 30) + volume_spike + (price > ma20)
+    return signal
 
-# Step 5: 뉴스 기반 재료/루머 요약 (단순 수집)
-def fetch_material_news(stock_name):
-    url = f"https://search.naver.com/search.naver?where=news&query={stock_name}+재료"
-    res = requests.get(url, headers={'User-Agent': 'Mozilla/5.0'})
+# 뉴스 요약 (KoGPT 또는 sumy 대체)
+def fetch_news_summary(query):
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    url = f"https://search.naver.com/search.naver?where=news&query={query}"
+    res = requests.get(url, headers=headers)
     soup = BeautifulSoup(res.text, 'lxml')
-    items = soup.select(".list_news .news_tit")
-    summaries = [item.text for item in items[:2]]
-    return summaries
+    news_items = soup.select(".list_news div.news_area a.news_tit")
+    links = [item['href'] for item in news_items[:3]]
+    titles = [item.get_text() for item in news_items[:3]]
+    summary = "\n".join([f"- {t}" for t in titles])
+    return summary
 
-# Step 6: 종목 차트 저장
-
-def save_chart(code, name):
-    df = yf.download(code + ".KS", period="3mo")
+# 캔들차트 저장 및 전송
+def send_chart(code):
+    df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
+    if df.empty:
+        return
     df.index.name = 'Date'
-    df.rename(columns={'Open': 'Open', 'High': 'High', 'Low': 'Low', 'Close': 'Close', 'Volume': 'Volume'}, inplace=True)
-    mpf.plot(df, type='candle', style='yahoo', volume=True, savefig=f"{name}.png")
+    df = df[['Open', 'High', 'Low', 'Close', 'Volume']]
+    filename = f"{code}_chart.png"
+    mpf.plot(df, type='candle', volume=True, style='yahoo', savefig=filename)
+    with open(filename, 'rb') as f:
+        requests.post(SEND_PHOTO_URL, files={'photo': f}, data={'chat_id': TELEGRAM_CHAT_ID})
 
-# Step 7: 메인 로직
+# 메인 실행
+def main():
+    today = datetime.datetime.now().strftime('%Y-%m-%d')
+    candidates = fetch_candidate_stocks()
+    scored = [(code, analyze_technical(code)) for code in candidates]
+    top3 = sorted(scored, key=lambda x: x[1], reverse=True)[:3]
+
+    message = f"\n\n📈 [{today}] AI 기반 단기 급등 예상 종목\n\n"
+    for code, score in top3:
+        ticker = yf.Ticker(code)
+        info = ticker.info
+        name = info.get("shortName", code)
+        summary = fetch_news_summary(name)
+        message += f"🔹 {name} ({code})\n기술점수: {score}/3\n최근 뉴스:\n{summary}\n\n"
+        send_chart(code)
+
+    message += "⚠️ 본 정보는 투자 참고용이며, 책임은 투자자 본인에게 있습니다."
+    requests.post(SEND_MSG_URL, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message})
+
 if __name__ == "__main__":
-    keywords = fetch_trending_keywords()
-    print("[테마 키워드]", keywords)
-    
-    candidates = set()
-    for keyword in keywords:
-        names = search_related_stocks(keyword)
-        for name in names:
-            ticker = name_to_ticker(name)
-            if ticker:
-                candidates.add((name, ticker))
-
-    scored = []
-    for name, code in candidates:
-        score = analyze_technical(code)
-        news = fetch_material_news(name)
-        scored.append((score, name, code, news))
-
-    top3 = sorted(scored, reverse=True)[:3]
-
-    print("\n📌 오늘의 AI 추천 종목:\n")
-    for i, (score, name, code, news) in enumerate(top3, 1):
-        print(f"{i}. {name} ({code}) - 기술점수: {score}")
-        print("   🔎 재료:")
-        for line in news:
-            print("   -", line)
-        print()
-        save_chart(code, name)
-
-    print("✅ 차트 이미지가 저장되었습니다.")
-
+    main()
