@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v8.0 - 거래대금 변동성 상위 필터 적용)
+# ai_stock_selector.py (v8.0 - 기술 분석 제거 + 시가총액 필터 추가)
 
 import os
 import datetime
@@ -6,10 +6,8 @@ import yfinance as yf
 import matplotlib.pyplot as plt
 import mplfinance as mpf
 import pandas as pd
-import numpy as np
 import requests
 from bs4 import BeautifulSoup
-from ta.momentum import StochasticOscillator
 from transformers import pipeline
 
 # === 설정 ===
@@ -37,61 +35,36 @@ def fetch_sector(name):
     except:
         return "기타"
 
-# === 1. 거래대금 변동성 상위 100 종목 수집 ===
+# === 시가총액 조회 ===
+def fetch_market_cap(code):
+    try:
+        df = yf.Ticker(code).info
+        return df.get("marketCap", 0) / 1e8  # 억 단위로 환산
+    except:
+        return 0
+
+# === 1. 급등 종목 수집 (시가총액 필터 포함) ===
 def fetch_candidate_stocks():
-    try:
-        url = "https://finance.naver.com/sise/sise_quant.naver"
-        headers = {'User-Agent': 'Mozilla/5.0'}
-        res = requests.get(url, headers=headers)
-        soup = BeautifulSoup(res.text, 'lxml')
-        stocks = []
-        rows = soup.select("table.type_2 tr")
-        for row in rows:
-            cols = row.select("td")
-            if len(cols) < 10:
-                continue
-            name = cols[1].text.strip()
-            href = cols[1].select_one("a")
-            if not href or "code=" not in href['href']:
-                continue
-            code = href['href'].split("code=")[-1]
+    url = "https://finance.naver.com/sise/lastsearch2.naver"
+    headers = {'User-Agent': 'Mozilla/5.0'}
+    res = requests.get(url, headers=headers)
+    soup = BeautifulSoup(res.text, 'lxml')
+    stocks = []
+    for a in soup.select(".box_type_l a"):
+        name = a.text.strip()
+        href = a.get("href", "")
+        if "code=" in href:
+            code = href.split("code=")[-1]
             suffix = ".KS" if code.startswith("0") else ".KQ"
-            sector = fetch_sector(name)
-            mcap_text = cols[6].text.strip().replace(",", "")
-            try:
-                mcap = int(mcap_text)
-                if 50000000000 <= mcap <= 800000000000:
-                    stocks.append({"name": name, "code": code + suffix, "sector": sector})
-            except:
-                continue
-        print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
-        return stocks[:100]
-    except Exception as e:
-        print(f"[종목 수집 오류]: {e}")
-        return []
+            full_code = code + suffix
+            cap = fetch_market_cap(full_code)
+            if 500 <= cap <= 8000:
+                sector = fetch_sector(name)
+                stocks.append({"name": name, "code": full_code, "sector": sector})
+    print(f"[후보 종목 수집 완료] 총 {len(stocks)}개")
+    return stocks[:30]
 
-# === 2. 기술 분석 (거래량 급증만 활용) ===
-def get_last_trading_date(df):
-    return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
-
-def analyze_technical(code):
-    try:
-        df = yf.download(code, period="6mo", interval="1d", auto_adjust=True)
-        if df.empty or len(df) < 50:
-            print(f"[!] 데이터 부족 또는 없음: {code}, 빈 데이터프레임 반환됨")
-            return 0, None, None
-
-        volume = df['Volume']
-        volume_spike = volume.iloc[-1] > volume.rolling(20).mean().iloc[-1] * 1.5
-        score = int(volume_spike)
-
-        print(f"[{code}] 기술점수: {score} (거래량급증: {volume_spike})")
-        return score, get_last_trading_date(df), df
-    except Exception as e:
-        print(f"Error in analyze_technical({code}): {e}")
-        return 0, None, None
-        
-# === 3. 뉴스 및 커뮤니티 정보 수집 ===
+# === 2. 뉴스 및 커뮤니티 정보 수집 ===
 def fetch_news_titles(name):
     titles = []
     try:
@@ -124,7 +97,7 @@ def fetch_news_titles(name):
     print(f"[뉴스/루머 총 수집] {name} - {len(titles)}건")
     return titles
 
-# === 4. GPT 뉴스 요약 ===
+# === 3. GPT 뉴스 요약 ===
 def gpt_style_summary(titles):
     if not titles:
         return "관련 뉴스 및 루머 없음"
@@ -137,20 +110,20 @@ def gpt_style_summary(titles):
         print(f"[요약 오류]: {e}")
         return "요약 실패"
 
-# === 5. 투자매력도 점수화 ===
+# === 4. 투자매력도 점수화 ===
 def score_investment_attractiveness(summary):
     try:
         result = scorer(summary)
         if result and isinstance(result, list):
             label = result[0]['label']
-            score = int(label[0])  # e.g., '4 stars'
+            score = int(label[0])
             return score
         return 0
     except Exception as e:
         print(f"[투자매력도 점수화 오류]: {e}")
         return 0
 
-# === 6. 테마 분류 ===
+# === 5. 테마 분류 ===
 def classify_theme(summary):
     try:
         result = theme_classifier(summary)
@@ -161,20 +134,7 @@ def classify_theme(summary):
         print(f"[테마 분류 오류]: {e}")
         return "기타"
 
-# === 7. 최근 유사 패턴 ===
-def check_recent_performance(df):
-    try:
-        if df is None or df.empty or len(df) < 10:
-            return "패턴 분석 불가"
-        recent = df['Close'].iloc[-3:]
-        if all(x > df['Close'].mean() for x in recent):
-            return "최근 3일 상승세 유지"
-        else:
-            return "변동성 존재"
-    except Exception as e:
-        return f"패턴 분석 실패: {e}"
-
-# === 8. 캔들차트 저장 ===
+# === 6. 캔들차트 저장 ===
 def save_candle_chart(code, name):
     try:
         df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
@@ -188,7 +148,7 @@ def save_candle_chart(code, name):
         print(f"[캔들차트 생성 오류] {name}: {e}")
         return None
 
-# === 9. 텔레그램 전송 ===
+# === 7. 텔레그램 전송 ===
 def send_telegram_message(message):
     try:
         requests.post(SEND_MSG_URL, data={'chat_id': TELEGRAM_CHAT_ID, 'text': message})
@@ -202,7 +162,7 @@ def send_telegram_image(filepath):
     except Exception as e:
         print(f"[텔레그램 이미지 전송 오류]: {e}")
 
-# === 10. 저장소 정리 ===
+# === 8. 저장소 정리 ===
 def cleanup_all_files():
     for f in os.listdir():
         if f.endswith(".png") or f.endswith(".log") or f.endswith(".json"):
@@ -211,31 +171,27 @@ def cleanup_all_files():
             except:
                 pass
 
-# === 11. main ===
+# === 9. main ===
 def main():
     stocks = fetch_candidate_stocks()
     scored = []
     for s in stocks:
-        tech_score, date, df = analyze_technical(s['code'])
-        if tech_score >= 2:
-            news_titles = fetch_news_titles(s['name'])
-            summary = gpt_style_summary(news_titles)
-            invest_score = score_investment_attractiveness(summary)
-            theme = classify_theme(summary)
-            pattern = check_recent_performance(df)
-            scored.append({
-                "name": s['name'], "code": s['code'], "score": tech_score,
-                "summary": summary, "invest": invest_score, "theme": theme,
-                "date": date, "pattern": pattern
-            })
+        news_titles = fetch_news_titles(s['name'])
+        summary = gpt_style_summary(news_titles)
+        invest_score = score_investment_attractiveness(summary)
+        theme = classify_theme(summary)
+        scored.append({
+            "name": s['name'], "code": s['code'],
+            "summary": summary, "invest": invest_score,
+            "theme": theme, "sector": s['sector']
+        })
 
-    top3 = sorted(scored, key=lambda x: (-x['score'], -x['invest']))[:3]
+    top3 = sorted(scored, key=lambda x: -x['invest'])[:3]
     today = datetime.date.today().strftime("%Y-%m-%d")
     msg = f"📈 [{today}] 기준 AI 급등 유망 종목\n\n"
     for s in top3:
         msg += f"🔹 {s['name']} ({s['code']})\n"
-        msg += f"기술점수: {s['score']} / 투자매력: {s['invest']}\n"
-        msg += f"테마: {s['theme']} / 패턴: {s['pattern']}\n"
+        msg += f"투자매력: {s['invest']} / 테마: {s['theme']}\n"
         msg += f"이슈 요약: {s['summary']}\n\n"
     msg += "⚠️ 본 정보는 투자 참고용이며, 투자 판단은 본인 책임입니다."
 
@@ -248,4 +204,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
