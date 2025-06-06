@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v4.0 - 전문가용 무료 AI + 백테스트 + 업종필터 + GPT 테마 분류)
+# ai_stock_selector.py (v4.1 - 전문가용 무료 AI + 백테스트 + 업종자동크롤링 + GPT 테마 분류)
 
 import os
 import datetime
@@ -22,13 +22,19 @@ SEND_PHOTO_URL = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendPhoto"
 summarizer = pipeline("summarization", model="knkarthick/MEETING_SUMMARY")
 theme_classifier = pipeline("text-classification", model="nlptown/bert-base-multilingual-uncased-sentiment")
 
-# === 업종 매핑 (예시)
-SECTOR_MAP = {
-    "삼성전자": "반도체",
-    "에코프로": "2차전지",
-    "하나마이크론": "반도체",
-    # 실제 적용 시 CSV나 외부 크롤링 기반으로 확장 가능
-}
+# === 업종 자동 크롤링 ===
+def fetch_sector(name):
+    try:
+        url = f"https://finance.naver.com/item/main.nhn?query={name}"
+        headers = {'User-Agent': 'Mozilla/5.0'}
+        res = requests.get(url, headers=headers)
+        soup = BeautifulSoup(res.text, 'lxml')
+        info = soup.select_one(".description")
+        if info and ">" in info.text:
+            return info.text.split(" > ")[-1].strip()
+        return "기타"
+    except:
+        return "기타"
 
 # === 1. 급등 종목 수집 ===
 def fetch_candidate_stocks():
@@ -43,7 +49,8 @@ def fetch_candidate_stocks():
         if "code=" in href:
             code = href.split("code=")[-1]
             suffix = ".KS" if code.startswith("0") else ".KQ"
-            stocks.append({"name": name, "code": code + suffix})
+            sector = fetch_sector(name)
+            stocks.append({"name": name, "code": code + suffix, "sector": sector})
     return stocks[:30]
 
 # === 2. 기술 분석 ===
@@ -145,8 +152,7 @@ def main():
     last_date = today
 
     for s in stocks:
-        sector = SECTOR_MAP.get(s['name'], None)
-        if sector and sector not in ["반도체", "2차전지"]:
+        if s['sector'] not in ["반도체", "2차전지"]:
             continue
 
         score, date, df = analyze_technical(s['code'])
@@ -157,15 +163,14 @@ def main():
             summary = gpt_style_summary(titles)
             theme = classify_theme(summary)
             gain = backtest_gain(df) if df is not None else ""
-            selected.append({"name": s['name'], "code": s['code'], "score": score,
-                             "summary": summary, "theme": theme, "gain": gain})
+            selected.append({"name": s['name'], "code": s['code'], "score": score, "summary": summary, "theme": theme, "gain": gain, "sector": s['sector']})
         if len(selected) >= 3:
             break
 
     header = f"📈 [{last_date}] 기준 AI 급등 유망 종목\n\n"
     body = ""
     for s in selected:
-        body += f"✅ {s['name']} ({s['code']})\n기술점수: {s['score']}/4\n{s['summary']}\n{s['gain']}\n{s['theme']}\n\n"
+        body += f"✅ {s['name']} ({s['code']})\n업종: {s['sector']}\n기술점수: {s['score']}/4\n{s['summary']}\n{s['gain']}\n{s['theme']}\n\n"
     footer = "⚠️ 본 정보는 투자 참고용이며, 투자 판단은 본인 책임입니다."
     full_message = header + body + footer
 
