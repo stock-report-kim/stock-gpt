@@ -1,4 +1,4 @@
-# ai_stock_ai_selector.py (최종 텔레그램 전용 버전)
+# ai_stock_selector.py (수정 완료: FutureWarning & mplfinance 오류 대응)
 
 import os
 import datetime
@@ -41,12 +41,13 @@ def analyze_technical(code):
         close = df['Close']
         if hasattr(close, "ndim") and close.ndim > 1:
             close = close.squeeze()
-        rsi = RSIIndicator(close).rsi().iloc[-1]
+        rsi = RSIIndicator(close).rsi()
         volume_spike = df['Volume'].iloc[-1] > df['Volume'].rolling(5).mean().iloc[-1] * 2
         ma20 = close.rolling(20).mean().iloc[-1]
-        score = int(rsi < 30) + int(volume_spike) + int(close.iloc[-1] > ma20)
+        score = int(rsi.iloc[-1] < 30) + int(volume_spike) + int(close.iloc[-1] > ma20)
         return score
-    except:
+    except Exception as e:
+        print(f"Error in analyze_technical({code}): {e}")
         return 0
 
 # === 3. 뉴스 요약 (GPT 스타일) ===
@@ -66,13 +67,19 @@ def gpt_style_summary(titles):
 
 # === 4. 차트 저장 ===
 def save_candle_chart(code, name):
-    df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
-    if df.empty:
+    try:
+        df = yf.download(code, period="3mo", interval="1d", auto_adjust=True)
+        if df.empty:
+            return None
+        df = df[['Open', 'High', 'Low', 'Close', 'Volume']].dropna()
+        df = df.astype(float)
+        filename = f"{code}_chart.png"
+        df.index.name = 'Date'
+        mpf.plot(df, type='candle', volume=True, style='yahoo', title=name, savefig=filename)
+        return filename
+    except Exception as e:
+        print(f"Error generating chart for {code}: {e}")
         return None
-    filename = f"{code}_chart.png"
-    df.index.name = 'Date'
-    mpf.plot(df, type='candle', volume=True, style='yahoo', title=name, savefig=filename)
-    return filename
 
 # === 5. 텔레그램 전송 ===
 def send_telegram_message(text):
