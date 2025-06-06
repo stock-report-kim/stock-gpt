@@ -1,4 +1,4 @@
-# ai_stock_selector.py (v4.4 - 루머 커뮤니티 데이터까지 요약 반영)
+# ai_stock_selector.py (v4.5 - 휴장일에도 최종 거래일 기준 종목 분석 지원)
 
 import os
 import datetime
@@ -57,6 +57,7 @@ def fetch_candidate_stocks():
 
 # === 2. 기술 분석 ===
 def get_last_trading_date(df):
+    # 마지막 영업일 기준 날짜 추출
     return df.index[-1].strftime('%Y-%m-%d') if not df.empty else datetime.date.today().isoformat()
 
 def analyze_technical(code):
@@ -72,7 +73,8 @@ def analyze_technical(code):
         ma20 = close.rolling(20).mean().iloc[-1]
         macd_signal = macd.macd_diff().iloc[-1] > 0
         score = int(rsi.iloc[-1] < 40) + int(volume_spike) + int(close.iloc[-1] > ma20) + int(macd_signal)
-        return score, get_last_trading_date(df), df
+        last_date = get_last_trading_date(df)
+        return score, last_date, df
     except Exception as e:
         print(f"Error in analyze_technical({code}): {e}")
         return 0, None, None
