@@ -1,12 +1,12 @@
-name: Run AI Stock Summary
+name: Trending Stock Alert at 8:30 AM
 
 on:
   schedule:
-    - cron: "30 23 * * *"  # 매일 오전 8:30 KST 실행
+    - cron: "30 23 * * *"  # KST 기준 매일 오전 8:30 (UTC 23:30)
   workflow_dispatch:
 
 jobs:
-  ai-stock:
+  trending-stock:
     runs-on: ubuntu-latest
 
     env:
@@ -24,7 +24,7 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install yfinance matplotlib mplfinance python-telegram-bot beautifulsoup4 requests pandas
+          pip install yfinance matplotlib mplfinance python-telegram-bot beautifulsoup4 requests
 
-      - name: Run script
+      - name: Run stock notifier
         run: python ai_stock_ai_selector.py
