@@ -21,7 +21,7 @@ def get_stock_data(stocks):
     data = {}
     for stock in stocks:
         try:
-            df = yf.download(stock, period='3mo', interval='1d')
+            df = yf.download(stock, period='3mo', interval='1d', auto_adjust=False)
             if not df.empty:
                 data[stock] = df
         except Exception as e:
@@ -53,11 +53,15 @@ def gpt_style_summary(stock, df, news_text):
 def select_top2_stocks(data):
     scored = []
     for stock, df in data.items():
-        if len(df) < 21: continue
-        change = df['Close'].pct_change().tail(3).sum()
-        avg_vol = df['Volume'].mean()
-        score = change * 100 + (df['Volume'].iloc[-1] / avg_vol)
-        scored.append((stock, score))
+        if df.shape[0] < 21:
+            continue
+        try:
+            change = df['Close'].pct_change().tail(3).sum()
+            avg_vol = df['Volume'].mean()
+            score = change * 100 + (df['Volume'].iloc[-1] / avg_vol)
+            scored.append((stock, score))
+        except Exception as e:
+            print(f"[ERROR: {stock}] {e}")
     top2 = sorted(scored, key=lambda x: x[1], reverse=True)[:2]
     return [s[0] for s in top2]
 
@@ -82,11 +86,10 @@ def send_to_telegram(stocks, data):
 
 # === 메인 ===
 def main():
-    universe = STOCK_LIST  # 시가총액 제한 제거됨
+    universe = STOCK_LIST
     data = get_stock_data(universe)
     top2 = select_top2_stocks(data)
     send_to_telegram(top2, data)
 
 if __name__ == "__main__":
     main()
-
