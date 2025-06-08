@@ -1,12 +1,12 @@
-name: Run AI Stock Selector
+name: Run AI Stock Summary
 
 on:
   schedule:
-    - cron: "30 23 * * *"  # 매일 오전 8:30 KST 실행 (UTC 기준 23:30)
+    - cron: "30 23 * * *"  # 매일 오전 8:30 KST 실행
   workflow_dispatch:
 
 jobs:
-  run-selector:
+  ai-stock:
     runs-on: ubuntu-latest
 
     env:
@@ -14,17 +14,17 @@ jobs:
       TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
 
     steps:
-      - name: Checkout repository
+      - name: Checkout code
         uses: actions/checkout@v3
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: '3.10'
+          python-version: "3.10"
 
       - name: Install dependencies
         run: |
-          pip install yfinance matplotlib mplfinance python-telegram-bot requests beautifulsoup4 pandas scikit-learn
+          pip install yfinance matplotlib mplfinance python-telegram-bot beautifulsoup4 requests pandas
 
-      - name: Run selector script
+      - name: Run script
         run: python ai_stock_ai_selector.py
