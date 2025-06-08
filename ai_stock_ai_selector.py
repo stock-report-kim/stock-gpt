@@ -8,26 +8,13 @@ from datetime import datetime, timedelta
 from telegram import Bot
 import requests
 from bs4 import BeautifulSoup
-from sklearn.linear_model import LogisticRegression
-import numpy as np
 
 # === 설정 ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
-# === 종목 리스트 초기 ===
+# === 종목 리스트 ===
 STOCK_LIST = ["005930.KS", "000660.KS", "035420.KQ", "035720.KQ", "247540.KQ", "131970.KQ"]
-
-# === 시가총액 필터링 ===
-def get_kosdaq_kospi_stocks():
-    url = "https://kind.krx.co.kr/corpgeneral/corpList.do?method=download"
-    df = pd.read_html(url, header=0, encoding='euc-kr')[0]
-    df = df[['종목코드', '회사명', '업종', '상장일', '시가총액']]
-    df['종목코드'] = df['종목코드'].astype(str).str.zfill(6)
-    df = df.rename(columns={'회사명': 'Name'})
-    df['MarketCap'] = df['시가총액'] * 1e8
-    df = df[(df['MarketCap'] >= 5e10) & (df['MarketCap'] <= 8e11)]
-    return df
 
 # === 데이터 수집 ===
 def get_stock_data(stocks):
@@ -41,82 +28,38 @@ def get_stock_data(stocks):
             print(f"Error fetching {stock}: {e}")
     return data
 
-# === 백테스트용 특징 및 레이블 생성 ===
-def generate_features(df):
-    df['Return'] = df['Close'].pct_change()
-    df['Volume_Change'] = df['Volume'].pct_change()
-    df['MA5'] = df['Close'].rolling(5).mean()
-    df['MA20'] = df['Close'].rolling(20).mean()
-    df.dropna(inplace=True)
-    df['Label'] = (df['Close'].shift(-3) > df['Close']).astype(int)
-    return df
-
-# === 백테스트 기반 AI 모델 학습 ===
-def train_ai_model(data):
-    X, y = [], []
-    for df in data.values():
-        df_feat = generate_features(df.copy())
-        X.extend(df_feat[['Return', 'Volume_Change', 'MA5', 'MA20']].values)
-        y.extend(df_feat['Label'].values)
-    model = LogisticRegression().fit(X, y)
-    return model
-
-# === 예측 기반 AI 추천 종목 선정 ===
-def predict_rising_stocks(model, data):
-    selected = []
-    for stock, df in data.items():
-        try:
-            df_feat = generate_features(df.copy())
-            if len(df_feat) == 0:
-                continue
-            latest = df_feat.iloc[-1][['Return', 'Volume_Change', 'MA5', 'MA20']].values.reshape(1, -1)
-            prob = model.predict_proba(latest)[0][1]
-            if prob > 0.6:
-                selected.append(stock)
-        except:
-            continue
-    return selected[:3]
-
-# === 실시간 검색어 기반 종목 추출 ===
-def get_search_trends():
+# === 뉴스 수집 ===
+def get_latest_news(stock_name):
     headers = {'User-Agent': 'Mozilla/5.0'}
-    search_stocks = []
-    try:
-        res = requests.get("https://finance.naver.com/", headers=headers)
-        soup = BeautifulSoup(res.text, "html.parser")
-        keywords = soup.select(".aside_news .tab_con1 li a")
-        for k in keywords:
-            name = k.text.strip()
-            if name:
-                search_stocks.append(name)
-    except Exception as e:
-        print("[NAVER TREND ERROR]", e)
-    search_stocks += ["에코프로", "포스코퓨처엠", "HLB"]
-    code_map = {"삼성전자": "005930.KS", "에코프로": "086520.KQ", "포스코퓨처엠": "003670.KQ", "HLB": "028300.KQ"}
-    return [code_map[s] for s in search_stocks if s in code_map][:3]
+    url = f"https://search.naver.com/search.naver?where=news&query={stock_name}"
+    res = requests.get(url, headers=headers)
+    soup = BeautifulSoup(res.text, "html.parser")
+    articles = soup.select(".news_tit")
+    texts = [a.text for a in articles[:3]]
+    return "\n".join(texts)
 
-# === 단타 전략 종목 선정 ===
-def apply_day_trading_strategies(data):
-    selected = []
-    for stock, df in data.items():
-        avg_vol = df['Volume'][:-1].mean()
-        if df['Volume'][-1] > avg_vol * 2:
-            selected.append(stock)
-    return selected[:3]
-
-# === 요약 생성 ===
-def generate_summary(df):
+# === GPT 스타일 요약 ===
+def gpt_style_summary(stock, df, news_text):
     latest = df.iloc[-1]
+    change = df['Close'].pct_change().iloc[-1] * 100
+    volume = latest['Volume']
+    close = latest['Close']
     ma5 = df['Close'].rolling(5).mean().iloc[-1]
     ma20 = df['Close'].rolling(20).mean().iloc[-1]
-    trend = "골든크로스" if ma5 > ma20 else "데드크로스"
-    summary = (
-        f"종가: {latest['Close']:.2f}\n"
-        f"거래량: {latest['Volume']}\n"
-        f"5일선: {ma5:.2f}, 20일선: {ma20:.2f}\n"
-        f"이평선 크로스: {trend}\n"
-    )
-    return summary
+    cross = "골든크로스" if ma5 > ma20 else "데드크로스"
+    return f"[{stock}]\n- 📌 종가: {close:.2f}원 ({change:+.2f}%)\n- 📊 거래량: {volume:,}주\n- 📈 기술적 흐름: 5일선({ma5:.2f}) vs 20일선({ma20:.2f}) → {cross}\n- 📰 주요 뉴스: {news_text}"
+
+# === 종목 선정 ===
+def select_top2_stocks(data):
+    scored = []
+    for stock, df in data.items():
+        if len(df) < 21: continue
+        change = df['Close'].pct_change().tail(3).sum()
+        avg_vol = df['Volume'].mean()
+        score = change * 100 + (df['Volume'].iloc[-1] / avg_vol)
+        scored.append((stock, score))
+    top2 = sorted(scored, key=lambda x: x[1], reverse=True)[:2]
+    return [s[0] for s in top2]
 
 # === 차트 생성 ===
 def save_chart(stock, df):
@@ -128,31 +71,21 @@ def save_chart(stock, df):
 def send_to_telegram(stocks, data):
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
     for stock in stocks:
-        df = data.get(stock)
-        if df is None:
-            continue
-        summary = generate_summary(df)
+        df = data[stock]
+        name = stock.split('.')[0]
+        news = get_latest_news(name)
+        summary = gpt_style_summary(stock, df, news)
         chart_path = save_chart(stock, df)
-        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=f"[{stock}] 요약\n" + summary)
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=summary)
         with open(chart_path, 'rb') as img:
             bot.send_photo(chat_id=TELEGRAM_CHAT_ID, photo=img)
 
-# === 메인 실행 ===
+# === 메인 ===
 def main():
-    cap_df = get_kosdaq_kospi_stocks()
-    code_list = cap_df['종목코드'].tolist()
-    stock_suffix = ['.KS' if c.startswith('0') else '.KQ' for c in code_list]
-    stock_codes = [f"{code}{suffix}" for code, suffix in zip(code_list, stock_suffix)]
-    trend_stocks = get_search_trends()
-    stock_universe = list(set(stock_codes + trend_stocks))
-
-    data = get_stock_data(stock_universe[:100])  # 최대 100개 제한
-    model = train_ai_model(data)
-    ai_stocks = predict_rising_stocks(model, data)
-    strat_stocks = apply_day_trading_strategies(data)
-
-    selected = list(set(ai_stocks + trend_stocks + strat_stocks))[:9]
-    send_to_telegram(selected, data)
+    universe = STOCK_LIST  # 시가총액 제한 제거됨
+    data = get_stock_data(universe)
+    top2 = select_top2_stocks(data)
+    send_to_telegram(top2, data)
 
 if __name__ == "__main__":
     main()
