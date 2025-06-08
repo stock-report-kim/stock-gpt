@@ -3,6 +3,7 @@ import os
 import requests
 from bs4 import BeautifulSoup
 from telegram import Bot
+from datetime import datetime
 
 # === 설정 ===
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
@@ -10,11 +11,11 @@ TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 
 # === 네이버 실시간 검색어 기반 급등 종목 수집 ===
 def get_naver_trending_stocks():
-    url = "https://finance.naver.com/"
+    url = "https://finance.naver.com/sise/lastsearch2.naver"
     headers = {'User-Agent': 'Mozilla/5.0'}
     res = requests.get(url, headers=headers)
     soup = BeautifulSoup(res.text, 'html.parser')
-    items = soup.select(".aside_popular .tab_con1 li a")
+    items = soup.select("table.type_5 tr td a")
     keywords = [item.text.strip() for item in items if item.text.strip()]
     code_map = {
         "삼성전자": ("005930", "KS"),
@@ -38,7 +39,8 @@ def get_latest_news(stock_name):
 
 # === 요약 생성 ===
 def create_summary(name, news_list, chart_url):
-    summary = f"📌 [{name}] 실시간 검색 급등\n"
+    today = datetime.now().strftime("%Y-%m-%d (%a)")
+    summary = f"📌 [{name}] 실시간 검색 급등 ({today})\n"
     summary += f"📊 차트 보기: {chart_url}\n"
     summary += "📰 주요 뉴스 요약:\n"
     for n in news_list:
@@ -48,6 +50,9 @@ def create_summary(name, news_list, chart_url):
 # === 텔레그램 전송 ===
 def send_to_telegram(stocks):
     bot = Bot(token=TELEGRAM_BOT_TOKEN)
+    if not stocks:
+        bot.send_message(chat_id=TELEGRAM_CHAT_ID, text="📭 오늘은 인기 검색 종목이 없습니다.")
+        return
     for name, code, market in stocks:
         news = get_latest_news(name)
         chart_url = f"https://finance.naver.com/item/main.nhn?code={code}"
